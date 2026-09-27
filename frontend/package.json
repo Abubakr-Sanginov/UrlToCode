@@ -14,10 +14,17 @@
     "test:qa": "RUN_E2E=true TEST_ROOT_PATH=src/tests jest src/tests/qa.test.ts"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "6.10.3",
+    "@codemirror/fold": "^0.19.4",
+    "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.6",
+    "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/language": "6.12.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.2",
     "@codemirror/state": "6.6.0",
+    "@codemirror/tooltip": "^0.19.16",
     "@codemirror/view": "6.41.1",
     "@radix-ui/react-accordion": "^1.1.2",
     "@radix-ui/react-alert-dialog": "^1.0.5",

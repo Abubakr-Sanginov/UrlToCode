@@ -16,8 +16,7 @@ function CodePreview({ code }: Props) {
   return (
     <div
       ref={scrollRef}
-      className="w-full px-2 bg-black text-green-400 whitespace-nowrap flex 
-      overflow-x-auto font-mono text-[10px] my-4"
+      className="my-4 flex w-full overflow-x-auto whitespace-nowrap rounded-md border border-border bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground"
     >
       {code}
     </div>

@@ -69,3 +69,10 @@ crawl_partial_*.json
 *.png
 !frontend/public/**/*.png
 !design-docs/**/*.png
+
+# Local AI tooling artifacts
+.agents/
+.playwright-mcp/
+.workbuddy-ai/
+opencode.json
+skills-lock.json

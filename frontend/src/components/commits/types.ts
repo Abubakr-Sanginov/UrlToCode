@@ -7,14 +7,52 @@ export type VariantStatus = "generating" | "complete" | "cancelled" | "error";
 export type AgentEventStatus = "running" | "complete" | "error";
 export type AgentEventType = "thinking" | "assistant" | "tool";
 
+/** One image as the agent tools report it; the backend fills what applies. */
+export type ToolImage = {
+  image_url?: string;
+  original_image_url?: string;
+  public_url?: string;
+  result_url?: string;
+  url?: string;
+  asset_id?: string;
+  prompt?: string;
+  aspect_ratio?: string;
+  image_urls?: string[];
+  old_text?: string;
+  new_text?: string;
+  replaced?: number;
+  status?: string;
+  error?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * A tool call's input or output. Every field is optional because the shape
+ * depends on the tool; the index signature keeps unknown tools readable
+ * without weakening the fields that are known.
+ */
+export type ToolPayload = {
+  images?: ToolImage[];
+  edits?: ToolImage[];
+  screenshots?: ToolImage[];
+  assets?: unknown[];
+  prompts?: string[];
+  image_urls?: string[];
+  asset_ids?: string[];
+  asset_descriptions?: string[];
+  count?: number;
+  error?: string;
+  [key: string]: unknown;
+};
+
 export type AgentEvent = {
   id: string;
   type: AgentEventType;
   status: AgentEventStatus;
   content?: string;
   toolName?: string;
-  input?: any;
-  output?: any;
+  input?: ToolPayload;
+  output?: ToolPayload;
   startedAt: number;
   endedAt?: number;
 };
@@ -47,6 +85,11 @@ export type BaseCommit = {
   isCommitted: boolean;
   variants: Variant[];
   selectedVariantIndex: number;
+  /**
+   * Human-readable name for this entry, used instead of "Version N" when
+   * present. Set for cloned site pages so each page is identifiable.
+   */
+  label?: string;
 };
 
 export type CommitType = "ai_create" | "ai_edit" | "code_create";

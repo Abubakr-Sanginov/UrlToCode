@@ -1,14 +1,13 @@
-import { useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { WS_BACKEND_URL } from "../config";
+import { USER_CLOSE_WEB_SOCKET_CODE } from "../constants";
 import { Settings } from "../types";
 import toast from "react-hot-toast";
 
-export interface CrawlProgress {
-  status: string;
-  current: number;
-  total: number;
-  phase: string;
-}
+// Kept in sync with the backend clamps in routes/url_to_code.py so the UI
+// cannot offer values the server would silently discard.
+export const MAX_CRAWL_PAGES = 30;
+export const MAX_CRAWL_DEPTH = 6;
 
 export interface PageInfo {
   path: string;
@@ -18,8 +17,6 @@ export interface PageInfo {
 
 export interface CrawlComplete {
   pagesFound: number;
-  siteStructure: any;
-  designTokens: any;
   pages: PageInfo[];
 }
 
@@ -31,193 +28,333 @@ export interface PageGenProgress {
   error?: boolean;
 }
 
-interface UrlToCodeState {
-  crawlProgress: CrawlProgress | null;
+export type CrawlPhase =
+  | "idle"
+  | "crawling"
+  | "generating"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface CrawlRunState {
+  phase: CrawlPhase;
+  /** Latest coarse status line, e.g. "Generating page 3/12". */
+  status: string;
+  /** Crawl-phase counter. Page generation uses `currentPage` instead. */
+  progress: { current: number; total: number } | null;
   crawlComplete: CrawlComplete | null;
   currentPage: PageGenProgress | null;
   completedPages: string[];
-  errors: string[];
+  failedPages: string[];
+  /** Persistent terminal failure text. Survives until the next run. */
+  error: string | null;
+  /** `Date.now()` when the run started; drives the elapsed timer. */
+  startedAt: number | null;
   isLoading: boolean;
 }
 
+export interface StartCrawlParams {
+  url: string;
+  stack: string;
+  maxPages: number;
+  maxDepth: number;
+  generateDatabase: boolean;
+  generateAuth: boolean;
+  /** Pack every page into one HTML file (one model call, no folder needed). */
+  singleFile: boolean;
+  settings: Settings;
+}
+
+const IDLE_STATE: CrawlRunState = {
+  phase: "idle",
+  status: "",
+  progress: null,
+  crawlComplete: null,
+  currentPage: null,
+  completedPages: [],
+  failedPages: [],
+  error: null,
+  startedAt: null,
+  isLoading: false,
+};
+
+/**
+ * Drives a url-to-code run over a websocket.
+ *
+ * State is held in React state (not a mutated ref) so every consumer
+ * re-renders on change without needing a manual subscribe/forceUpdate dance.
+ */
 export function useUrlToCode(
-  onStart: () => void,
-  onComplete: (code: Record<string, string>) => void,
-  onError: () => void
+  onComplete: (code: Record<string, string>) => void
 ) {
+  const [state, setState] = useState<CrawlRunState>(IDLE_STATE);
   const wsRef = useRef<WebSocket | null>(null);
-  const stateRef = useRef<UrlToCodeState>({
-    crawlProgress: null,
-    crawlComplete: null,
-    currentPage: null,
-    completedPages: [],
-    errors: [],
-    isLoading: false,
-  });
-  const listenersRef = useRef<Set<() => void>>(new Set());
+  // Guards against a superseded socket's handlers mutating the current run.
+  const runIdRef = useRef(0);
+  // Pages arrive one by one; keeping the latest set means a connection that
+  // drops near the end still hands over the pages that were finished.
+  const partialCodeRef = useRef<Record<string, string>>({});
+  const onCompleteRef = useRef(onComplete);
 
-  const notify = useCallback(() => {
-    listenersRef.current.forEach((fn) => fn());
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  // Close the socket if the component unmounts mid-run, otherwise its
+  // handlers keep firing into an unmounted tree.
+  useEffect(() => {
+    return () => {
+      runIdRef.current += 1;
+      wsRef.current?.close(USER_CLOSE_WEB_SOCKET_CODE);
+      wsRef.current = null;
+    };
   }, []);
 
-  const subscribe = useCallback((fn: () => void) => {
-    listenersRef.current.add(fn);
-    return () => listenersRef.current.delete(fn);
+  const reset = useCallback(() => {
+    runIdRef.current += 1;
+    wsRef.current?.close(USER_CLOSE_WEB_SOCKET_CODE);
+    wsRef.current = null;
+    setState(IDLE_STATE);
   }, []);
 
-  const getState = useCallback(() => stateRef.current, []);
+  const startCrawl = useCallback((params: StartCrawlParams) => {
+    const {
+      url,
+      stack,
+      maxPages,
+      maxDepth,
+      generateDatabase,
+      generateAuth,
+      singleFile,
+      settings,
+    } = params;
 
-  const startCrawl = useCallback(
-    (
-      url: string,
-      stack: string,
-      maxPages: number,
-      maxDepth: number,
-      generateDatabase: boolean,
-      generateAuth: boolean,
-      settings: Settings
-    ) => {
-      if (wsRef.current) {
-        wsRef.current.close();
+    // Supersede any previous run before its handlers can touch new state.
+    runIdRef.current += 1;
+    const runId = runIdRef.current;
+    const isStale = () => runIdRef.current !== runId;
+
+    wsRef.current?.close(USER_CLOSE_WEB_SOCKET_CODE);
+    partialCodeRef.current = {};
+
+    setState({
+      ...IDLE_STATE,
+      phase: "crawling",
+      status: "Connecting...",
+      startedAt: Date.now(),
+      isLoading: true,
+    });
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(`${WS_BACKEND_URL}/url-to-code`);
+    } catch {
+      setState((s) => ({
+        ...s,
+        phase: "failed",
+        isLoading: false,
+        error: `Could not open a connection to ${WS_BACKEND_URL}. Is the backend running?`,
+      }));
+      return;
+    }
+    wsRef.current = ws;
+
+    ws.addEventListener("open", () => {
+      if (isStale()) return;
+      setState((s) => ({ ...s, status: "Starting crawl..." }));
+      ws.send(
+        JSON.stringify({
+          url,
+          stack,
+          maxPages,
+          maxDepth,
+          generateDatabase,
+          generateAuth,
+          singleFile,
+          openRouterApiKey: settings.openRouterApiKey,
+          openRouterModel: settings.openRouterModel,
+          openAiApiKey: settings.openAiApiKey,
+          openAiBaseURL: settings.openAiBaseURL,
+          anthropicApiKey: settings.anthropicApiKey,
+          geminiApiKey: settings.geminiApiKey,
+          customProviderBaseUrl: settings.customProviderBaseUrl,
+          customProviderApiKey: settings.customProviderApiKey,
+          customProviderModel: settings.customProviderModel,
+        })
+      );
+    });
+
+    ws.addEventListener("message", (event: MessageEvent) => {
+      if (isStale()) return;
+
+      let response: {
+        type?: string;
+        value?: string;
+        data?: Record<string, unknown>;
+      };
+      try {
+        response = JSON.parse(event.data);
+      } catch {
+        return;
       }
 
-      onStart();
+      switch (response.type) {
+        case "status":
+          setState((s) => ({ ...s, status: response.value || s.status }));
+          break;
 
-      const s = stateRef.current;
-      s.crawlProgress = null;
-      s.crawlComplete = null;
-      s.currentPage = null;
-      s.completedPages = [];
-      s.errors = [];
-      s.isLoading = true;
-      notify();
+        case "progress":
+          setState((s) => ({
+            ...s,
+            status: response.value || s.status,
+            progress: {
+              current: Number(response.data?.current ?? 0),
+              total: Number(response.data?.total ?? 0),
+            },
+          }));
+          break;
 
-      const wsUrl = `${WS_BACKEND_URL}/url-to-code`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.addEventListener("open", () => {
-        ws.send(
-          JSON.stringify({
-            url,
-            stack: stack.replace("-", "_"),
-            maxPages,
-            maxDepth,
-            generateDatabase,
-            generateAuth,
-            openRouterApiKey: settings.openRouterApiKey,
-            openRouterModel: settings.openRouterModel,
-            openAiApiKey: settings.openAiApiKey,
-            anthropicApiKey: settings.anthropicApiKey,
-            geminiApiKey: settings.geminiApiKey,
-          })
-        );
-      });
-
-      ws.addEventListener("message", (event: MessageEvent) => {
-        const response = JSON.parse(event.data);
-        const st = stateRef.current;
-
-        switch (response.type) {
-          case "status":
-            st.crawlProgress = {
-              status: response.value || "",
-              current: st.crawlProgress?.current || 0,
-              total: st.crawlProgress?.total || 0,
-              phase: response.data?.phase || "crawling",
-            };
-            notify();
-            break;
-
-          case "progress":
-            st.crawlProgress = {
-              status: response.value || "",
-              current: response.data?.current || 0,
-              total: response.data?.total || 0,
-              phase: response.data?.phase || "crawling",
-            };
-            notify();
-            break;
-
-          case "crawlComplete":
-            st.crawlComplete = response.data as CrawlComplete;
-            st.crawlProgress = null;
-            toast.success(`Found ${st.crawlComplete.pagesFound} pages!`);
-            notify();
-            break;
-
-          case "pageStart":
-            st.currentPage = response.data as PageGenProgress;
-            notify();
-            break;
-
-          case "pageComplete": {
-            const pageData = response.data as PageGenProgress;
-            if (pageData.error) {
-              st.errors = [...st.errors, pageData.path];
-              toast.error(`Failed: ${pageData.path}`);
-            } else {
-              st.completedPages = [...st.completedPages, pageData.path];
-            }
-            st.currentPage = null;
-            notify();
-            break;
+        case "crawlComplete": {
+          const found = Number(response.data?.pagesFound ?? 0);
+          const pages = (response.data?.pages ?? []) as PageInfo[];
+          setState((s) => ({
+            ...s,
+            phase: "generating",
+            progress: null,
+            crawlComplete: { pagesFound: found, pages },
+          }));
+          if (found > 0) {
+            toast.success(`Found ${found} ${found === 1 ? "page" : "pages"}`);
           }
-
-          case "setCode":
-            try {
-              const codeData = JSON.parse(response.value || "{}");
-              st.isLoading = false;
-              notify();
-              onComplete(codeData.code || {});
-            } catch (e) {
-              console.error("Failed to parse code data", e);
-            }
-            break;
-
-          case "variantComplete":
-            st.isLoading = false;
-            toast.success("Full site generation complete!");
-            notify();
-            break;
-
-          case "error":
-            toast.error(response.value || "An error occurred");
-            st.isLoading = false;
-            notify();
-            onError();
-            break;
+          break;
         }
-      });
 
-      ws.addEventListener("close", () => {
-        const st = stateRef.current;
-        if (st.isLoading) {
-          st.isLoading = false;
-          notify();
-          onError();
+        case "pageStart":
+          setState((s) => ({
+            ...s,
+            phase: "generating",
+            currentPage: response.data as unknown as PageGenProgress,
+          }));
+          break;
+
+        case "pageComplete": {
+          const page = response.data as unknown as PageGenProgress;
+          setState((s) => ({
+            ...s,
+            currentPage: null,
+            completedPages: page.error
+              ? s.completedPages
+              : [...s.completedPages, page.path],
+            failedPages: page.error
+              ? [...s.failedPages, page.path]
+              : s.failedPages,
+          }));
+          break;
         }
-      });
 
-      ws.addEventListener("error", () => {
-        toast.error("WebSocket connection error");
-        const st = stateRef.current;
-        st.isLoading = false;
-        notify();
-        onError();
+        case "partialCode": {
+          const partial = (response.data?.code ?? {}) as Record<string, string>;
+          if (Object.keys(partial).length > 0) {
+            partialCodeRef.current = partial;
+          }
+          break;
+        }
+
+        case "setCode": {
+          const code = (response.data?.code ?? {}) as Record<string, string>;
+          const pageCount = Object.keys(code).length;
+          if (pageCount === 0) {
+            setState((s) => ({
+              ...s,
+              phase: "failed",
+              isLoading: false,
+              currentPage: null,
+              error: "The model returned no code. Try again or pick a different model.",
+            }));
+            return;
+          }
+          setState((s) => ({
+            ...s,
+            phase: "done",
+            isLoading: false,
+            currentPage: null,
+          }));
+          onCompleteRef.current(code);
+          break;
+        }
+
+        case "error":
+          setState((s) => ({
+            ...s,
+            phase: "failed",
+            isLoading: false,
+            currentPage: null,
+            error: response.value || "The run failed for an unknown reason.",
+          }));
+          break;
+      }
+    });
+
+    // A close without a terminal message means the run died. Keep the user on
+    // this screen with an explanation instead of silently resetting.
+    ws.addEventListener("close", (event: CloseEvent) => {
+      if (isStale()) return;
+      wsRef.current = null;
+      setState((s) => {
+        if (!s.isLoading) return s;
+        if (event.code === USER_CLOSE_WEB_SOCKET_CODE) {
+          return { ...s, phase: "cancelled", isLoading: false, currentPage: null };
+        }
+        const salvaged = partialCodeRef.current;
+        if (Object.keys(salvaged).length > 0) {
+          // Deliver what was generated rather than discarding the run.
+          onCompleteRef.current(salvaged);
+          return {
+            ...s,
+            phase: "done",
+            isLoading: false,
+            currentPage: null,
+            error:
+              "The connection closed before the run finished; showing the " +
+              `${Object.keys(salvaged).length} page(s) that were generated.`,
+          };
+        }
+        return {
+          ...s,
+          phase: "failed",
+          isLoading: false,
+          currentPage: null,
+          error:
+            "The connection to the backend closed before the run finished. " +
+            "Check the backend logs and try again.",
+        };
       });
-    },
-    [onStart, onComplete, onError, notify]
-  );
+    });
+
+    ws.addEventListener("error", () => {
+      if (isStale()) return;
+      setState((s) => ({
+        ...s,
+        phase: "failed",
+        isLoading: false,
+        currentPage: null,
+        error: `Could not reach the backend at ${WS_BACKEND_URL}. Is it running?`,
+      }));
+    });
+  }, []);
 
   const cancelCrawl = useCallback(() => {
-    wsRef.current?.close();
-    const st = stateRef.current;
-    st.isLoading = false;
-    notify();
-    onError();
-    toast.success("Generation cancelled");
-  }, [onError, notify]);
+    runIdRef.current += 1;
+    wsRef.current?.close(USER_CLOSE_WEB_SOCKET_CODE);
+    wsRef.current = null;
+    setState((s) => ({
+      ...s,
+      phase: "cancelled",
+      isLoading: false,
+      currentPage: null,
+    }));
+    toast.success("Clone cancelled");
+  }, []);
 
-  return { startCrawl, cancelCrawl, subscribe, getState };
+  return { state, startCrawl, cancelCrawl, reset };
 }

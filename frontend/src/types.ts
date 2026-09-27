@@ -28,6 +28,10 @@ export interface Settings {
   geminiApiKey: string | null;
   openRouterApiKey: string | null;
   openRouterModel: string | null;
+  // Custom OpenAI-compatible provider (Ollama, vLLM, etc.)
+  customProviderBaseUrl: string | null;
+  customProviderApiKey: string | null;
+  customProviderModel: string | null;
 }
 
 export interface DesignSystem {

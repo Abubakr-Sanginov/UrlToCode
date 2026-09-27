@@ -2,20 +2,12 @@ import React from "react";
 import { Stack } from "../../lib/stacks";
 import { Settings } from "../../types";
 import UrlToCodePane from "../url-to-code/UrlToCodePane";
+import { CrawlRunState, StartCrawlParams } from "../../hooks/useUrlToCode";
 
 interface Props {
-  startCrawl: (
-    url: string,
-    stack: string,
-    maxPages: number,
-    maxDepth: number,
-    generateDatabase: boolean,
-    generateAuth: boolean,
-    settings: Settings
-  ) => void;
+  startCrawl: (params: StartCrawlParams) => void;
   cancelCrawl: () => void;
-  getState: () => any;
-  subscribe: (fn: () => void) => () => void;
+  state: CrawlRunState;
   settings: Settings;
   setSettings: React.Dispatch<React.SetStateAction<Settings>>;
 }
@@ -23,8 +15,7 @@ interface Props {
 function UnifiedInputPane({
   startCrawl,
   cancelCrawl,
-  getState,
-  subscribe,
+  state,
   settings,
   setSettings,
 }: Props) {
@@ -36,14 +27,13 @@ function UnifiedInputPane({
   }
 
   return (
-    <div className="w-full max-w-4xl mx-auto px-4">
+    <div className="mx-auto w-full max-w-4xl px-4">
       <UrlToCodePane
         stack={settings.generatedCodeConfig}
         setStack={setStack}
         startCrawl={startCrawl}
         cancelCrawl={cancelCrawl}
-        getState={getState}
-        subscribe={subscribe}
+        state={state}
         settings={settings}
       />
     </div>

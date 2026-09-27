@@ -1,5 +1,18 @@
 import os
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable.
+
+    `bool(os.environ.get(...))` is wrong for falsy-looking strings: both
+    "false" and "0" are truthy strings. Accept the common spellings instead.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 NUM_VARIANTS = 4
 NUM_VARIANTS_VIDEO = 2
 
@@ -9,12 +22,34 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", None)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", None)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", None)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", None)
+# Models used by the direct-provider paths (url-to-code), where the UI sends
+# no model id. Override via env when an endpoint serves a different catalog.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-5.4-mini"
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3-flash-preview"
 
 # Image generation (optional)
 REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY", None)
 
+# Browsers may only call this backend from these origins. A wildcard is not
+# usable here: it cannot be combined with credentials, and this API takes API
+# keys from the page.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in (
+        os.environ.get("CORS_ALLOWED_ORIGINS")
+        or "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174"
+    ).split(",")
+    if origin.strip()
+]
+
+# The crawler drives a visible browser by default: Cloudflare-style checks
+# flag headless Chromium and serve "Just a moment..." instead of the site.
+# Set CRAWLER_HEADLESS=1 where no display exists (Docker, CI, a server).
+CRAWLER_HEADLESS = _env_flag("CRAWLER_HEADLESS")
+
 # Debugging-related
-IS_DEBUG_ENABLED = bool(os.environ.get("IS_DEBUG_ENABLED", False))
+IS_DEBUG_ENABLED = _env_flag("IS_DEBUG_ENABLED")
 DEBUG_DIR = os.environ.get("DEBUG_DIR", "")
 
 # When enabled, every LLM request is written to run_logs/prompt_reports as a
@@ -35,4 +70,4 @@ LOCAL_ASSET_BASE_URL = os.environ.get("LOCAL_ASSET_BASE_URL", "http://127.0.0.1:
 
 # Set to True when running in production (on the hosted version)
 # Used as a feature flag to enable or disable certain features
-IS_PROD = os.environ.get("IS_PROD", False)
+IS_PROD = _env_flag("IS_PROD")

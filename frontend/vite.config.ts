@@ -22,6 +22,7 @@ export default ({ mode }) => {
         "/generate-code": { target: CODEGEN_BACKEND, ws: true },
         "/api": { target: CODEGEN_BACKEND },
         "/local-assets": { target: CODEGEN_BACKEND },
+        "/generated": { target: CODEGEN_BACKEND },
       },
     },
     plugins: [

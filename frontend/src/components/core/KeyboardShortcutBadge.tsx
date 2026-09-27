@@ -16,7 +16,7 @@ const KeyboardShortcutBadge: React.FC<KeyboardShortcutBadgeProps> = ({
     );
 
   return (
-    <span className="font-mono text-xs ml-2 rounded bg-gray-700 dark:bg-gray-900 text-white py-[2px] px-2">
+    <span className="ml-2 rounded border border-border bg-muted px-1.5 py-[2px] font-mono text-xs text-muted-foreground">
       {icon}
     </span>
   );

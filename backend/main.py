@@ -4,9 +4,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from config import IS_DEBUG_ENABLED
+from config import CORS_ALLOWED_ORIGINS, IS_DEBUG_ENABLED
 from routes import (
     capabilities,
     screenshot,
@@ -19,22 +21,25 @@ from routes import (
     agent_runs,
     eval_sets,
     url_to_code,
+    local_project,
 )
 from uploaded_assets import configure_uploaded_asset_routes
 
-app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
-configure_uploaded_asset_routes(app)
 
-
-@app.on_event("startup")
-async def log_debug_mode() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     debug_status = "ENABLED" if IS_DEBUG_ENABLED else "DISABLED"
     print(f"Backend startup complete. Debug mode is {debug_status}.")
+    yield
+
+
+app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None, lifespan=lifespan)
+configure_uploaded_asset_routes(app)
 
 # Configure CORS settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,3 +57,4 @@ app.include_router(prompt_reports.router)
 app.include_router(agent_runs.router)
 app.include_router(eval_sets.router)
 app.include_router(url_to_code.router)
+app.include_router(local_project.router)

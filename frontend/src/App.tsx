@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generateCode } from "./generateCode";
 import { AppState, AppTheme, EditorTheme, Settings } from "./types";
+import type { ToolPayload } from "./components/commits/types";
 import { NEW_DESIGN_SYSTEM_CONTENT } from "./lib/design-systems";
 import { IS_RUNNING_ON_CLOUD } from "./config";
 import { OnboardingNote } from "./components/messages/OnboardingNote";
@@ -104,6 +105,10 @@ function App() {
       isTermOfServiceAccepted: false,
       openRouterApiKey: null,
       openRouterModel: null,
+      // Custom OpenAI-compatible provider
+      customProviderBaseUrl: null,
+      customProviderApiKey: null,
+      customProviderModel: null,
     },
     "setting"
   );
@@ -236,19 +241,17 @@ function App() {
     };
   }, [appTheme]);
 
-  const getAssetsById = () => useProjectStore.getState().assetsById;
+  const getAssetsById = useCallback(() => useProjectStore.getState().assetsById, []);
 
-  const urlToCode = useUrlToCode(
-    () => {
-      setAppState(AppState.CODING);
-    },
-    (code) => {
-      importUrlToCode(code);
-    },
-    () => {
-      setAppState(AppState.INITIAL);
-    }
-  );
+  // `reset` and the clone hook reference each other, so the cancel callback is
+  // held in a ref to break the initialization cycle.
+  const urlToCodeRef = useRef<(() => void) | null>(null);
+
+  const urlToCode = useUrlToCode((code) => {
+    importUrlToCode(code);
+  });
+
+  urlToCodeRef.current = urlToCode.reset;
 
   // Functions
   const reset = () => {
@@ -268,6 +271,16 @@ function App() {
     // Inputs
     setInputMode("image");
     setReferenceImages([]);
+  };
+
+  /**
+   * "New project" from the icon strip. Unlike `reset`, this also tears down an
+   * in-flight clone and clears its progress panel, so the start pane comes up
+   * clean instead of showing a frozen spinner from the abandoned run.
+   */
+  const startNewProject = () => {
+    urlToCodeRef.current?.();
+    reset();
   };
 
   const regenerate = () => {
@@ -528,8 +541,8 @@ function App() {
           id: eventId,
           type: "tool",
           status: "running",
-          toolName: data?.name,
-          input: data?.input,
+          toolName: typeof data?.name === "string" ? data.name : undefined,
+          input: (data?.input as ToolPayload | undefined) ?? undefined,
           startedAt: Date.now(),
         });
         lastToolEventIdRef.current[variantIndex] = eventId;
@@ -538,7 +551,7 @@ function App() {
         if (!eventId) return;
         finishAgentEvent(commit.hash, variantIndex, eventId, {
           status: data?.ok === false ? "error" : "complete",
-          output: data?.output,
+          output: (data?.output as ToolPayload | undefined) ?? undefined,
           endedAt: Date.now(),
         });
         if (lastToolEventIdRef.current[variantIndex] === eventId) {
@@ -760,25 +773,65 @@ function App() {
     }));
   };
 
+  /**
+   * Turns a completed clone into one version per generated page.
+   *
+   * The portal/landing page comes first and becomes the visible head; every
+   * crawled page follows in crawl order so the version switcher doubles as a
+   * page switcher. Previously only a single entry was kept and the rest of the
+   * run's output was discarded.
+   */
   function importUrlToCode(code: Record<string, string>) {
-    // Reset any existing state
     reset();
 
-    // Create the main HTML from the project structure or first page
-    const mainCode = code["project-structure"] || Object.values(code)[0] || "";
+    const portalKey = "project-structure";
+    const pageKeys = Object.keys(code).filter(
+      (key) => key !== portalKey && key !== "database-schema" && code[key]?.trim()
+    );
 
-    // Create a new commit and set it as the head
-    const commit = createCommit({
-      type: "code_create",
-      parentHash: null,
-      variants: [{ code: mainCode, history: [] }],
-      inputs: null,
-    });
-    addCommit(commit);
-    setHead(commit.hash);
+    const ordered: { label: string; code: string }[] = [];
+    if (code[portalKey]?.trim()) {
+      ordered.push({ label: "Portal", code: code[portalKey] });
+    }
+    for (const key of pageKeys) {
+      ordered.push({ label: key, code: code[key] });
+    }
 
-    // Set the app state
+    if (ordered.length === 0) {
+      toast.error("The run produced no usable code.");
+      return;
+    }
+
+    // Newest commit wins the "latest" slot, so append in reverse and point the
+    // head at the portal to leave the user on the entry page.
+    let firstHash: string | null = null;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const entry = ordered[i];
+      const commit = createCommit({
+        type: "code_create",
+        parentHash: null,
+        label: entry.label,
+        variants: [
+          {
+            code: entry.code,
+            history: [],
+            status: "complete",
+            completedAt: Date.now(),
+          },
+        ],
+        inputs: null,
+      });
+      addCommit(commit);
+      if (i === 0) firstHash = commit.hash;
+    }
+
+    if (firstHash) setHead(firstHash);
     setAppState(AppState.CODE_READY);
+
+    const pageCount = ordered.length;
+    toast.success(
+      `Imported ${pageCount} ${pageCount === 1 ? "page" : "pages"}`
+    );
   }
 
   const showContentPanel =
@@ -791,10 +844,10 @@ function App() {
 
   return (
     <div
-      className={`dark:bg-black dark:text-white ${
+      className={`bg-canvas text-foreground ${
         appState === AppState.CODING || appState === AppState.CODE_READY
           ? "flex h-dvh flex-col overflow-hidden lg:block lg:h-screen"
-          : "min-h-screen"
+          : "flex min-h-screen flex-col"
       }`}
     >
       {IS_RUNNING_ON_CLOUD && (
@@ -830,7 +883,7 @@ function App() {
             setMobilePane("preview");
           }}
           onNewProject={() => {
-            reset();
+            startNewProject();
             setIsHistoryOpen(false);
             setIsSettingsOpen(false);
             setMobilePane("preview");
@@ -843,27 +896,37 @@ function App() {
       </div>
 
       {isCodingOrReady && !isSettingsOpen && (
-        <div className="border-b border-gray-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-zinc-950 lg:hidden">
-          <div className="grid grid-cols-2 rounded-xl bg-gray-100 p-1 dark:bg-zinc-800">
+        <div className="border-b border-border bg-card px-4 py-2 lg:hidden">
+          <div
+            className="grid grid-cols-2 rounded-lg border border-border bg-muted p-0.5"
+            role="tablist"
+            aria-label="Mobile view"
+          >
             <button
+              type="button"
+              role="tab"
+              aria-selected={mobilePane === "preview"}
               onClick={() => {
                 setIsHistoryOpen(false);
                 setMobilePane("preview");
               }}
-              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 mobilePane === "preview"
-                  ? "bg-white text-gray-900 shadow-sm dark:bg-zinc-700 dark:text-white"
-                  : "text-gray-500 dark:text-zinc-400"
+                  ? "bg-card text-foreground shadow-card"
+                  : "text-muted-foreground"
               }`}
             >
               Preview
             </button>
             <button
+              type="button"
+              role="tab"
+              aria-selected={mobilePane === "chat"}
               onClick={() => setMobilePane("chat")}
-              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 mobilePane === "chat"
-                  ? "bg-white text-gray-900 shadow-sm dark:bg-zinc-700 dark:text-white"
-                  : "text-gray-500 dark:text-zinc-400"
+                  ? "bg-card text-foreground shadow-card"
+                  : "text-muted-foreground"
               }`}
             >
               Chat
@@ -875,18 +938,21 @@ function App() {
       {/* Content panel - shows sidebar, history, or editor */}
       {showContentPanel && !isSettingsOpen && (
         <div
-          className={`border-b border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 dark:text-white lg:fixed lg:inset-y-0 lg:left-16 lg:z-40 lg:flex lg:w-[calc(28rem-4rem)] lg:flex-col lg:border-b-0 lg:border-r ${
+          className={`border-b border-border bg-card lg:fixed lg:inset-y-0 lg:left-16 lg:z-40 lg:flex lg:w-[calc(28rem-4rem)] lg:flex-col lg:border-b-0 lg:border-r ${
             showMobileChatPane ? "block" : "hidden lg:flex"
           }`}
         >
             {isHistoryOpen ? (
-              <div className="flex-1 overflow-y-auto sidebar-scrollbar-stable px-4">
+              <div className="sidebar-scrollbar-stable flex-1 overflow-y-auto px-4">
                 <div className="mt-3">
-                  <div className="flex items-center justify-between mb-3 px-1">
-                    <h2 className="text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">Versions</h2>
+                  <div className="mb-3 flex items-center justify-between px-1">
+                    <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Versions
+                    </h2>
                     <button
+                      type="button"
                       onClick={() => setIsHistoryOpen(false)}
-                      className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                      className="flex items-center gap-1 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <LuChevronLeft className="w-3.5 h-3.5" />
                       Back to editor
@@ -949,8 +1015,7 @@ function App() {
               <StartPane
                 startCrawl={urlToCode.startCrawl}
                 cancelCrawl={urlToCode.cancelCrawl}
-                getState={urlToCode.getState}
-                subscribe={urlToCode.subscribe}
+                state={urlToCode.state}
                 settings={settings}
                 setSettings={setSettings}
               />

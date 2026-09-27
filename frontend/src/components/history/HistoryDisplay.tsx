@@ -16,18 +16,19 @@ function MediaThumbnail({
   if (!firstImage && !firstVideo) return null;
 
   return (
-    <div className="shrink-0 w-12 h-12 rounded-md overflow-hidden border border-gray-200 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800">
+    <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border bg-muted">
       {firstImage ? (
         <img
           src={firstImage}
           alt="Input screenshot"
-          className="w-full h-full object-cover"
+          className="h-full w-full object-cover"
           draggable={false}
         />
       ) : firstVideo ? (
         <button
           type="button"
-          className="relative w-full h-full"
+          className="relative h-full w-full"
+          aria-label="Play video"
           onClick={(e) => {
             e.stopPropagation();
             onPlayClick?.();
@@ -35,15 +36,16 @@ function MediaThumbnail({
         >
           <video
             src={firstVideo}
-            className="w-full h-full object-cover"
+            className="h-full w-full object-cover"
             muted
             playsInline
           />
-          <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+          <div className="absolute inset-0 flex items-center justify-center bg-foreground/25">
             <svg
-              className="w-4 h-4 text-white"
+              className="h-4 w-4 text-background"
               fill="currentColor"
               viewBox="0 0 20 20"
+              aria-hidden="true"
             >
               <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
             </svg>
@@ -74,16 +76,16 @@ function ExpandedMedia({
   if (!hasImages && !hasVideos) return null;
 
   return (
-    <div className="flex flex-col gap-2 mt-2">
+    <div className="mt-2 flex flex-col gap-2">
       {item.images.map((img, i) => (
         <div
           key={`img-${i}`}
-          className="rounded-md overflow-hidden border border-gray-200 dark:border-zinc-700"
+          className="overflow-hidden rounded-md border border-border"
         >
           <img
             src={img}
             alt={`Input ${i + 1}`}
-            className="w-full h-auto object-contain max-h-48"
+            className="h-auto max-h-48 w-full object-contain"
             draggable={false}
           />
         </div>
@@ -91,12 +93,12 @@ function ExpandedMedia({
       {item.videos.map((vid, i) => (
         <div
           key={`vid-${i}`}
-          className="rounded-md overflow-hidden border border-gray-200 dark:border-zinc-700"
+          className="overflow-hidden rounded-md border border-border"
         >
           <video
             ref={i === 0 ? videoRef : undefined}
             src={vid}
-            className="w-full h-auto max-h-48"
+            className="h-auto max-h-48 w-full"
             controls
             muted
             playsInline
@@ -137,8 +139,8 @@ export default function HistoryDisplay() {
 
   return (
     <div className="flex flex-col gap-2">
-      {[...renderedHistory].reverse().map((item, _reverseIndex) => {
-        const versionNumber = renderedHistory.length - _reverseIndex;
+      {[...renderedHistory].reverse().map((item, reverseIndex) => {
+        const versionNumber = renderedHistory.length - reverseIndex;
         const isActive = item.hash === head;
         const isExpanded = expandedHash === item.hash;
         const hasMedia = item.images.length > 0 || item.videos.length > 0;
@@ -146,85 +148,93 @@ export default function HistoryDisplay() {
         return (
           <div
             key={item.hash}
-            className={`rounded-xl border transition-all ${
+            className={`rounded-xl border bg-card transition-colors ${
               isActive
-                ? "bg-white dark:bg-zinc-800 border-blue-200 dark:border-blue-800 shadow-sm"
-                : "bg-white dark:bg-zinc-900 border-gray-100 dark:border-zinc-800 hover:border-gray-200 dark:hover:border-zinc-700"
+                ? "border-brand-border shadow-card"
+                : "border-border hover:border-input"
             }`}
           >
-            <div
-              className="flex items-center gap-3 px-3 py-2.5 cursor-pointer"
-              onClick={() => setHead(item.hash)}
-            >
-              {/* Version number badge */}
-              <span
-                className={`shrink-0 flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-semibold ${
-                  isActive
-                    ? "bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300"
-                    : "bg-gray-100 dark:bg-zinc-800 text-gray-400 dark:text-gray-500"
-                }`}
-              >
-                {versionNumber}
-              </span>
-
-              {/* Thumbnail */}
-              <MediaThumbnail
-                item={item}
-                onPlayClick={() => handleVideoPlayClick(item.hash)}
+            {/* The whole row selects this version. The button is stretched
+                behind the content so the media and expand controls, which are
+                buttons themselves, stay clickable without nesting buttons. */}
+            <div className="relative flex items-center gap-3 px-3 py-2.5">
+              <button
+                type="button"
+                onClick={() => setHead(item.hash)}
+                aria-label={`Open ${item.summary}`}
+                aria-current={isActive ? "true" : undefined}
+                className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
 
-              {/* Summary */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded ${
-                      item.type === "Create"
-                        ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"
-                        : item.type === "Edit"
-                          ? "bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
-                          : "bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400"
-                    }`}
-                  >
-                    {item.type}
-                  </span>
-                  {item.parentVersion !== null && (
-                    <span className="text-[10px] text-gray-400 dark:text-gray-500">
-                      from v{item.parentVersion}
-                    </span>
-                  )}
-                </div>
-                <p
-                  className={`text-sm mt-0.5 line-clamp-2 ${
+              <div className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-3">
+                {/* Version number badge */}
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums ${
                     isActive
-                      ? "font-medium text-gray-900 dark:text-white"
-                      : "text-gray-600 dark:text-gray-400"
+                      ? "bg-brand-subtle text-brand"
+                      : "bg-muted text-muted-foreground"
                   }`}
                 >
-                  {item.summary}
-                  {item.selectedElementTag && (
-                    <>
-                      {" "}
-                      <span className="text-gray-300 dark:text-gray-600">&middot;</span>
-                      {" "}
-                      <code className="text-xs font-mono text-violet-600 dark:text-violet-400">&lt;{item.selectedElementTag}&gt;</code>
-                    </>
-                  )}
-                </p>
+                  {versionNumber}
+                </span>
+
+                {/* Thumbnail */}
+                <div className="pointer-events-auto">
+                  <MediaThumbnail
+                    item={item}
+                    onPlayClick={() => handleVideoPlayClick(item.hash)}
+                  />
+                </div>
+
+                {/* Summary */}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {item.type}
+                    </span>
+                    {item.parentVersion !== null && (
+                      <span className="text-[10px] text-muted-foreground">
+                        from v{item.parentVersion}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className={`mt-0.5 line-clamp-2 break-words text-sm ${
+                      isActive
+                        ? "font-medium text-foreground"
+                        : "text-muted-foreground"
+                    }`}
+                  >
+                    {item.summary}
+                    {item.selectedElementTag && (
+                      <>
+                        {" "}
+                        <span className="text-border">&middot;</span>{" "}
+                        <code className="font-mono text-xs text-brand">
+                          &lt;{item.selectedElementTag}&gt;
+                        </code>
+                      </>
+                    )}
+                  </p>
+                </div>
               </div>
 
               {/* Expand button */}
               {(hasMedia || item.summary.length > 30) && (
                 <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     setExpandedHash(isExpanded ? null : item.hash);
                   }}
-                  className="shrink-0 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 p-1 rounded-md hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? "Hide details" : "Show details"}
+                  className="relative shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {isExpanded ? (
-                    <BsChevronDown className="w-3 h-3" />
+                    <BsChevronDown className="h-3 w-3" aria-hidden="true" />
                   ) : (
-                    <BsChevronRight className="w-3 h-3" />
+                    <BsChevronRight className="h-3 w-3" aria-hidden="true" />
                   )}
                 </button>
               )}
@@ -234,13 +244,16 @@ export default function HistoryDisplay() {
             {isExpanded && (
               <div className="px-3 pb-3 pl-12">
                 {item.summary.length > 30 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400 break-words">
+                  <p className="break-words text-xs leading-5 text-muted-foreground">
                     {item.summary}
                   </p>
                 )}
                 {item.selectedElementTag && (
-                  <p className="text-xs text-violet-500 dark:text-violet-400 mt-1">
-                    Target: <code className="font-mono text-[10px] bg-violet-100 dark:bg-violet-900/30 px-1 py-0.5 rounded">&lt;{item.selectedElementTag}&gt;</code>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Target:{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-brand">
+                      &lt;{item.selectedElementTag}&gt;
+                    </code>
                   </p>
                 )}
                 <ExpandedMedia

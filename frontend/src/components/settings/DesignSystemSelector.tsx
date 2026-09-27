@@ -60,8 +60,8 @@ function DesignSystemSelector({
         <SelectTrigger
           className={
             hasSelection
-              ? "flex h-7 w-auto items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-0 text-xs font-medium text-gray-700 shadow-none hover:bg-gray-50 focus:ring-0 focus:ring-offset-0 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700 [&>svg:last-child]:hidden"
-              : "flex h-7 w-7 items-center justify-center rounded-lg border-0 bg-transparent p-0 text-gray-400 shadow-none hover:bg-gray-100 hover:text-gray-600 focus:ring-0 focus:ring-offset-0 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 [&>svg:last-child]:hidden"
+              ? "flex h-7 w-auto items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-0 text-xs font-medium text-foreground shadow-none hover:bg-accent focus:ring-0 focus:ring-offset-0 [&>svg:last-child]:hidden"
+              : "flex h-7 w-7 items-center justify-center rounded-lg border-0 bg-transparent p-0 text-muted-foreground shadow-none hover:bg-accent hover:text-foreground focus:ring-0 focus:ring-offset-0 [&>svg:last-child]:hidden"
           }
           data-testid="design-system-select"
           aria-label={
@@ -75,13 +75,16 @@ function DesignSystemSelector({
               : "Add a design system"
           }
         >
-          <LuPalette className="h-3.5 w-3.5 shrink-0" />
+          <LuPalette className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           {hasSelection && (
             <>
               <span className="max-w-[120px] truncate">
                 {selectedDesignSystem.name}
               </span>
-              <LuChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+              <LuChevronDown
+                className="h-3 w-3 shrink-0 opacity-60"
+                aria-hidden="true"
+              />
             </>
           )}
         </SelectTrigger>
@@ -98,7 +101,7 @@ function DesignSystemSelector({
       ) : (
         <div className="flex justify-end text-xs">
           <SelectTrigger
-            className="h-auto w-auto justify-start gap-1 border-0 bg-transparent px-0 py-0 text-gray-500 shadow-none hover:text-gray-700 focus:ring-0 focus:ring-offset-0 dark:text-zinc-400 dark:hover:text-zinc-200 [&>svg]:hidden"
+            className="h-auto w-auto justify-start gap-1 border-0 bg-transparent px-0 py-0 text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus:ring-offset-0 [&>svg]:hidden"
             data-testid="design-system-select"
           >
             <span>+ Add design system</span>

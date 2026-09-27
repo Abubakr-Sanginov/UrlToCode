@@ -211,6 +211,7 @@ function BestOfNEvalsPage() {
         case "7":
         case "8":
         case "9":
+{
           e.preventDefault();
           const modelIndex = parseInt(e.key) - 1;
           if (modelIndex < folderNames.length) {
@@ -221,6 +222,7 @@ function BestOfNEvalsPage() {
               // Number = vote for model
               handleVote(currentComparisonIndex, modelIndex);
             }
+          }
           }
           break;
         case "t":
@@ -236,6 +238,10 @@ function BestOfNEvalsPage() {
 
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
+    // The navigation and vote handlers are recreated every render; the
+    // listener reads the current ones through closure over state that is
+    // already listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentComparisonIndex, evals.length, folderNames.length]);
 
   // Add/remove folder input fields

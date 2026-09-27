@@ -96,7 +96,13 @@ def _metadata_path(asset_id: str) -> str:
 
 
 def _write_metadata(asset_id: str, content_type: str, asset_base_url: str) -> None:
-    with open(_metadata_path(asset_id), "w") as file:
+    path = _metadata_path(asset_id)
+    if os.path.exists(path):
+        # Content-addressed ids are shared across sessions; the first writer's
+        # base_url must win or an earlier session's promote would build URLs
+        # from a later session's host.
+        return
+    with open(path, "w") as file:
         json.dump(
             {
                 "asset_id": asset_id,

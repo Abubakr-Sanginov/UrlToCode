@@ -871,9 +871,14 @@ class AgentRunRecorder:
         # The same file can be referenced under several URL forms (with and
         # without a host prefix); copy it once and point every form at it.
         copied_local: dict[str, str] = {}
+        asset_root = os.path.abspath(LOCAL_ASSET_DIR)
         for url in dict.fromkeys(_LOCAL_ASSET_URL_RE.findall(final_html)):
             filename = unquote(url.split("/local-assets/", 1)[1])
-            source_path = os.path.join(LOCAL_ASSET_DIR, filename)
+            # Model-generated markup could reference "/local-assets/../..";
+            # refuse anything that escapes LOCAL_ASSET_DIR.
+            source_path = os.path.abspath(os.path.join(asset_root, filename))
+            if not source_path.startswith(asset_root + os.sep):
+                continue
             entry: dict[str, Any] = {"url": url, "kind": "local"}
             if filename in copied_local:
                 saved_name = copied_local[filename]
@@ -922,12 +927,22 @@ class AgentRunRecorder:
         if remote_urls:
             import httpx
 
+            from routes.export import is_public_http_url
+
             async with httpx.AsyncClient(
                 timeout=_ASSET_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True
             ) as client:
                 for url in remote_urls:
                     entry = {"url": url, "kind": "remote"}
                     try:
+                        # Model-controlled markup; never fetch internal
+                        # addresses (link-local metadata, localhost, ...).
+                        if not await is_public_http_url(url):
+                            entry.update(
+                                {"status": "failed", "error": "non-public URL"}
+                            )
+                            manifest.append(entry)
+                            continue
                         response = await client.get(url)
                         response.raise_for_status()
                         content = response.content

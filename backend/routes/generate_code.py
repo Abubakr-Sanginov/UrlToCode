@@ -26,7 +26,6 @@ from llm import (
 )
 from typing import (
     Any,
-    Callable,
     Coroutine,
     Dict,
     List,

@@ -1,13 +1,15 @@
 import { Commit, CommitType } from "../commits/types";
 
-function displayHistoryItemType(itemType: CommitType) {
+function displayHistoryItemType(commit: Commit): string {
+  const itemType: CommitType = commit.type;
   switch (itemType) {
     case "ai_create":
       return "Create";
     case "ai_edit":
       return "Edit";
     case "code_create":
-      return "Imported from code";
+      // Cloned site pages carry a label; a plain code import does not.
+      return commit.label ? "Page" : "Imported from code";
     default: {
       const exhaustiveCheck: never = itemType;
       throw new Error(`Unhandled case: ${exhaustiveCheck}`);
@@ -54,7 +56,8 @@ export function summarizeHistoryItem(commit: Commit): string {
     case "ai_edit":
       return commit.inputs.text || "Edit";
     case "code_create":
-      return "Imported from code";
+      // Cloned site pages carry their path/portal name.
+      return commit.label || "Imported from code";
     default: {
       const exhaustiveCheck: never = commitType;
       throw new Error(`Unhandled case: ${exhaustiveCheck}`);
@@ -86,7 +89,7 @@ export const renderHistory = (history: Commit[]): RenderedHistoryItem[] => {
     const media = getCommitMedia(commit);
     renderedHistory.push({
       ...commit,
-      type: displayHistoryItemType(commit.type),
+      type: displayHistoryItemType(commit),
       summary: summarizeHistoryItem(commit),
       selectedElementTag: getSelectedElementTag(commit),
       parentVersion: setParentVersion(commit, history),

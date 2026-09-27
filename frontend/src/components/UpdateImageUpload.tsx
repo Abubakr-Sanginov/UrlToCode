@@ -32,8 +32,11 @@ export function UpdateImagePreview({ updateImages, setUpdateImages }: Props) {
     <div className="px-3 pt-3">
       <div className="flex flex-wrap gap-2 py-1">
         {updateImages.map((image, index) => (
-          <div key={index} className="relative flex-shrink-0 group overflow-visible">
-            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-gray-200 bg-white p-1 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <div
+            key={index}
+            className="group relative flex-shrink-0 overflow-visible"
+          >
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-border bg-background p-1">
               <img
                 src={image}
                 alt={`Reference ${index + 1}`}
@@ -41,10 +44,12 @@ export function UpdateImagePreview({ updateImages, setUpdateImages }: Props) {
               />
             </div>
             <button
+              type="button"
               onClick={() => removeImage(index)}
-              className="absolute -right-1 -top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-gray-900 text-white opacity-0 shadow transition-opacity group-hover:opacity-100 hover:bg-red-600 dark:border-zinc-900"
+              aria-label={`Remove reference ${index + 1}`}
+              className="absolute -right-1 -top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-card bg-foreground text-background opacity-0 transition-opacity hover:bg-danger group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Cross2Icon className="h-2.5 w-2.5" />
+              <Cross2Icon className="h-2.5 w-2.5" aria-hidden="true" />
             </button>
           </div>
         ))}
@@ -116,18 +121,17 @@ function UpdateImageUpload({ updateImages, setUpdateImages }: Props) {
         type="button"
         onClick={handleButtonClick}
         disabled={isAtLimit}
-        className={`p-2 rounded-lg transition-colors ${
+        aria-label="Add images"
+        className={`rounded-lg p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
           isAtLimit
-            ? "text-gray-300 dark:text-zinc-600 cursor-not-allowed"
-            : "text-gray-500 dark:text-zinc-400 hover:text-gray-700 dark:hover:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+            ? "cursor-not-allowed text-muted-foreground/40"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground"
         }`}
         title={
-          isAtLimit
-            ? `Limit reached (${MAX_UPDATE_IMAGES})`
-            : "Add images"
+          isAtLimit ? `Limit reached (${MAX_UPDATE_IMAGES})` : "Add images"
         }
       >
-        <LuPlus className="w-[18px] h-[18px]" />
+        <LuPlus className="h-[18px] w-[18px]" aria-hidden="true" />
       </button>
     </div>
   );

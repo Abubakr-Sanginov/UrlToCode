@@ -1,5 +1,14 @@
-import { useState } from "react";
-import { LuGlobe2, LuLoader2, LuCheck, LuX, LuChevronDown, LuChevronUp } from "react-icons/lu";
+import { useId, useState } from "react";
+import {
+  LuLoader2,
+  LuCheck,
+  LuX,
+  LuChevronDown,
+  LuChevronUp,
+  LuAlertTriangle,
+  LuRotateCcw,
+  LuArrowRight,
+} from "react-icons/lu";
 import { toast } from "react-hot-toast";
 import { Input } from "../ui/input";
 import {
@@ -12,118 +21,180 @@ import {
 } from "../ui/select";
 import { Stack, STACK_DESCRIPTIONS } from "../../lib/stacks";
 import { Settings } from "../../types";
+import {
+  CrawlRunState,
+  MAX_CRAWL_DEPTH,
+  MAX_CRAWL_PAGES,
+  StartCrawlParams,
+} from "../../hooks/useUrlToCode";
+import { useElapsedTime } from "../../hooks/useElapsedTime";
 
 interface Props {
   stack: Stack;
   setStack: (stack: Stack) => void;
-  startCrawl: (
-    url: string,
-    stack: string,
-    maxPages: number,
-    maxDepth: number,
-    generateDatabase: boolean,
-    generateAuth: boolean,
-    settings: Settings
-  ) => void;
+  startCrawl: (params: StartCrawlParams) => void;
   cancelCrawl: () => void;
-  getState: () => {
-    crawlProgress: any;
-    crawlComplete: any;
-    currentPage: any;
-    completedPages: string[];
-    errors: string[];
-    isLoading: boolean;
-  };
-  subscribe: (fn: () => void) => () => void;
+  state: CrawlRunState;
   settings: Settings;
 }
 
 function stackLabel(stack: Stack): string {
-  const desc = STACK_DESCRIPTIONS[stack];
-  return desc.components.join(" + ");
+  return STACK_DESCRIPTIONS[stack].components.join(" + ");
 }
 
-function UrlToCodePane({ stack, setStack, startCrawl, cancelCrawl, getState, subscribe, settings }: Props) {
+function hasAnyProvider(settings: Settings): boolean {
+  return Boolean(
+    settings.customProviderBaseUrl ||
+      settings.openRouterApiKey ||
+      settings.anthropicApiKey ||
+      settings.openAiApiKey ||
+      settings.geminiApiKey
+  );
+}
+
+function clampNumber(raw: string, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+const FIELD_LABEL =
+  "block text-xs font-medium text-muted-foreground";
+const NUMBER_INPUT =
+  "h-8 w-16 rounded-md border border-input bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card disabled:opacity-50";
+
+function UrlToCodePane({
+  stack,
+  setStack,
+  startCrawl,
+  cancelCrawl,
+  state,
+  settings,
+}: Props) {
   const [url, setUrl] = useState("");
-  const [maxPages, setMaxPages] = useState(30);
-  const [maxDepth, setMaxDepth] = useState(4);
-  const [generateDatabase, setGenerateDatabase] = useState(true);
-  const [generateAuth, setGenerateAuth] = useState(true);
+  const [maxPages, setMaxPages] = useState(10);
+  const [maxDepth, setMaxDepth] = useState(2);
+  const [generateDatabase, setGenerateDatabase] = useState(false);
+  const [generateAuth, setGenerateAuth] = useState(false);
+  // No folder connected by default: everything lands in one HTML file.
+  const [singleFile, setSingleFile] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [, forceUpdate] = useState(0);
 
-  subscribe(() => forceUpdate((n) => n + 1));
+  const ids = useId();
+  const urlId = `${ids}-url`;
+  const stackId = `${ids}-stack`;
+  const maxPagesId = `${ids}-max-pages`;
+  const maxDepthId = `${ids}-max-depth`;
+  const advancedId = `${ids}-advanced`;
 
-  const state = getState();
+  const { isLoading, phase } = state;
+  const elapsed = useElapsedTime(state.startedAt, isLoading);
+  const providerConfigured = hasAnyProvider(settings);
+
+  const totalPages =
+    state.currentPage?.totalPages ?? state.crawlComplete?.pagesFound ?? 0;
+  const donePages = state.completedPages.length + state.failedPages.length;
+  const percent =
+    totalPages > 0 ? Math.round((donePages / totalPages) * 100) : 0;
 
   function handleStart() {
-    if (!url.trim()) {
-      toast.error("Please enter a URL");
+    const trimmed = url.trim();
+    if (!trimmed) {
+      toast.error("Enter a website URL first");
+      return;
+    }
+    if (/\s/.test(trimmed)) {
+      toast.error("That does not look like a valid URL");
       return;
     }
 
-    let finalUrl = url.trim();
-    if (!finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
-      finalUrl = "https://" + finalUrl;
+    const finalUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      // Throws on anything the backend could not fetch either.
+      new URL(finalUrl);
+    } catch {
+      toast.error("That does not look like a valid URL");
+      return;
     }
 
-    startCrawl(finalUrl, stack, maxPages, maxDepth, generateDatabase, generateAuth, settings);
+    startCrawl({
+      url: finalUrl,
+      stack,
+      maxPages,
+      maxDepth,
+      generateDatabase,
+      generateAuth,
+      singleFile,
+      settings,
+    });
   }
 
-  return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="w-full max-w-2xl overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-        <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-4 dark:border-zinc-800 sm:px-5">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-            <LuGlobe2 className="h-4 w-4" />
-          </span>
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-zinc-100">
-              Clone any website
-            </h3>
-            <p className="mt-0.5 text-xs leading-5 text-gray-500 dark:text-zinc-400">
-              Paste a URL and AI will crawl &amp; recreate the entire site
-            </p>
-          </div>
-        </div>
+  const statusLine = state.currentPage
+    ? `Generating ${state.currentPage.path} (${state.currentPage.pageIndex + 1}/${state.currentPage.totalPages})`
+    : state.status;
 
-        <div className="space-y-3 px-4 py-4 sm:px-5">
-          <label
-            htmlFor="clone-url"
-            className="block text-xs font-medium text-gray-600 dark:text-zinc-300"
-          >
-            Website URL
-          </label>
-          <Input
-            id="clone-url"
-            type="url"
-            inputMode="url"
-            autoComplete="url"
-            placeholder="https://example.com"
-            onChange={(e) => setUrl(e.target.value)}
-            value={url}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !state.isLoading) {
-                e.preventDefault();
-                handleStart();
-              }
-            }}
-            className="h-11 w-full"
-            disabled={state.isLoading}
-            data-testid="clone-url-input"
-          />
+  return (
+    <div className="flex w-full flex-col gap-3">
+      <div className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-raised">
+        {/* Brand accent line along the top edge */}
+        <div
+          aria-hidden="true"
+          className="h-0.5 w-full bg-gradient-to-r from-brand/0 via-brand/70 to-brand/0"
+        />
+
+        <div className="space-y-4 px-5 py-5">
+          {!providerConfigured && (
+            <div className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-subtle px-3 py-2">
+              <LuAlertTriangle
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning"
+                aria-hidden="true"
+              />
+              <p className="text-xs leading-5 text-warning">
+                No model provider configured. Add an API key in Settings, or the
+                run will fail.
+              </p>
+            </div>
+          )}
+
+          <div>
+            <label htmlFor={urlId} className={FIELD_LABEL}>
+              Website URL
+            </label>
+            <Input
+              id={urlId}
+              type="url"
+              inputMode="url"
+              autoComplete="url"
+              placeholder="https://example.com"
+              onChange={(e) => setUrl(e.target.value)}
+              value={url}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !isLoading) {
+                  e.preventDefault();
+                  handleStart();
+                }
+              }}
+              className="mt-1.5 h-11 w-full text-sm"
+              disabled={isLoading}
+              data-testid="clone-url-input"
+            />
+          </div>
 
           <div className="flex items-center gap-3">
-            <label className="text-xs font-medium text-gray-600 dark:text-zinc-300">
-              Stack:
+            <label htmlFor={stackId} className={FIELD_LABEL}>
+              Stack
             </label>
             <Select
               value={stack}
               onValueChange={(value) => setStack(value as Stack)}
-              disabled={state.isLoading}
+              disabled={isLoading}
             >
-              <SelectTrigger className="w-auto gap-2 font-medium" data-testid="stack-select">
-                <SelectValue />
+              <SelectTrigger
+                id={stackId}
+                className="h-8 w-auto gap-2 text-xs font-medium"
+                data-testid="stack-select"
+              >
+                <SelectValue placeholder="Select a stack" />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -137,156 +208,285 @@ function UrlToCodePane({ stack, setStack, startCrawl, cancelCrawl, getState, sub
             </Select>
           </div>
 
-          <button
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-          >
-            {showAdvanced ? (
-              <LuChevronUp className="h-3 w-3" />
-            ) : (
-              <LuChevronDown className="h-3 w-3" />
-            )}
-            Advanced options
-          </button>
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((prev) => !prev)}
+              aria-expanded={showAdvanced}
+              aria-controls={advancedId}
+              className="-mx-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {showAdvanced ? (
+                <LuChevronUp className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <LuChevronDown className="h-3 w-3" aria-hidden="true" />
+              )}
+              Advanced options
+            </button>
 
-          {showAdvanced && (
-            <div className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-zinc-800/50">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-600 dark:text-zinc-300">
-                    Max pages:
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={maxPages}
-                    onChange={(e) => setMaxPages(parseInt(e.target.value) || 30)}
-                    className="w-16 rounded-md border border-gray-200 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-                    disabled={state.isLoading}
-                  />
+            {showAdvanced && (
+              <div
+                id={advancedId}
+                className="mt-2.5 space-y-3 rounded-lg border border-border bg-muted/40 p-3"
+              >
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  <div className="flex items-center gap-2">
+                    <label htmlFor={maxPagesId} className={FIELD_LABEL}>
+                      Max pages
+                    </label>
+                    <input
+                      id={maxPagesId}
+                      type="number"
+                      min={1}
+                      max={MAX_CRAWL_PAGES}
+                      value={maxPages}
+                      onChange={(e) =>
+                        setMaxPages(
+                          clampNumber(e.target.value, maxPages, 1, MAX_CRAWL_PAGES)
+                        )
+                      }
+                      className={NUMBER_INPUT}
+                      disabled={isLoading}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor={maxDepthId} className={FIELD_LABEL}>
+                      Max depth
+                    </label>
+                    <input
+                      id={maxDepthId}
+                      type="number"
+                      min={1}
+                      max={MAX_CRAWL_DEPTH}
+                      value={maxDepth}
+                      onChange={(e) =>
+                        setMaxDepth(
+                          clampNumber(e.target.value, maxDepth, 1, MAX_CRAWL_DEPTH)
+                        )
+                      }
+                      className={NUMBER_INPUT}
+                      disabled={isLoading}
+                    />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-600 dark:text-zinc-300">
-                    Max depth:
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {singleFile
+                    ? "Single file: one index.html, one model call. Sites too large for one answer switch to a file per page automatically."
+                    : "Each page is a separate model call. Free models take roughly 1-2 minutes per page."}
+                </p>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={generateDatabase}
+                      onChange={(e) => setGenerateDatabase(e.target.checked)}
+                      disabled={isLoading}
+                      className="h-3.5 w-3.5 rounded border-input accent-brand"
+                    />
+                    Database schema
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={maxDepth}
-                    onChange={(e) => setMaxDepth(parseInt(e.target.value) || 4)}
-                    className="w-16 rounded-md border border-gray-200 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-                    disabled={state.isLoading}
-                  />
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={generateAuth}
+                      onChange={(e) => setGenerateAuth(e.target.checked)}
+                      disabled={isLoading}
+                      className="h-3.5 w-3.5 rounded border-input accent-brand"
+                    />
+                    Auth pages
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={singleFile}
+                      onChange={(e) => setSingleFile(e.target.checked)}
+                      disabled={isLoading}
+                      className="h-3.5 w-3.5 rounded border-input accent-brand"
+                    />
+                    Single file
+                  </label>
                 </div>
               </div>
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={generateDatabase}
-                    onChange={(e) => setGenerateDatabase(e.target.checked)}
-                    disabled={state.isLoading}
-                    className="rounded"
-                  />
-                  Generate database schema
-                </label>
-                <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={generateAuth}
-                    onChange={(e) => setGenerateAuth(e.target.checked)}
-                    disabled={state.isLoading}
-                    className="rounded"
-                  />
-                  Generate auth system
-                </label>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        <div className="flex justify-end border-t border-gray-100 bg-gray-50/70 px-4 py-3.5 dark:border-zinc-800 dark:bg-zinc-800/50 sm:px-5">
+        <div className="flex items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-3.5">
+          <div className="min-w-0 text-xs text-muted-foreground">
+            {isLoading && elapsed && (
+              <span className="tabular-nums">Elapsed {elapsed}</span>
+            )}
+          </div>
           <div className="w-full sm:w-56">
-            {state.isLoading ? (
+            {isLoading ? (
               <button
+                type="button"
                 onClick={cancelCrawl}
-                className="w-full rounded-lg bg-red-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-600 transition-colors"
+                className="w-full rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+                data-testid="clone-cancel"
               >
                 Cancel
               </button>
             ) : (
               <button
+                type="button"
                 onClick={handleStart}
-                className="w-full rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors"
+                className="group flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-brand-foreground shadow-card transition-all hover:bg-brand-muted hover:shadow-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
                 data-testid="clone-start"
               >
-                Clone Website
-                <span className="ml-2 text-xs font-normal opacity-60">↵</span>
+                {phase === "failed" || phase === "cancelled"
+                  ? "Try again"
+                  : "Clone website"}
+                <LuArrowRight
+                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                  aria-hidden="true"
+                />
               </button>
             )}
           </div>
         </div>
       </div>
 
-      {(state.crawlProgress || state.crawlComplete || state.currentPage || state.completedPages.length > 0) && (
-        <div className="w-full max-w-2xl overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="border-b border-gray-100 px-4 py-3 dark:border-zinc-800">
-            <h4 className="text-xs font-medium text-gray-700 dark:text-zinc-300">
-              Progress
-            </h4>
+      {state.error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-danger-border bg-danger-subtle px-4 py-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <LuAlertTriangle
+              className="mt-0.5 h-4 w-4 shrink-0 text-danger"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-danger">Clone failed</p>
+              <p className="mt-1 break-words text-xs leading-5 text-danger/90">
+                {state.error}
+              </p>
+            </div>
           </div>
-          <div className="max-h-48 space-y-1.5 overflow-y-auto px-4 py-3">
-            {state.crawlProgress && (
-              <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-zinc-400">
-                <LuLoader2 className="h-3 w-3 animate-spin" />
-                <span>{state.crawlProgress.status}</span>
-                <span className="text-gray-400">
-                  ({state.crawlProgress.current}/{state.crawlProgress.total})
+        </div>
+      )}
+
+      {phase === "cancelled" && !state.error && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground"
+        >
+          <LuRotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          Run cancelled
+          {state.completedPages.length > 0 &&
+            ` after ${state.completedPages.length} page${state.completedPages.length === 1 ? "" : "s"}`}
+        </div>
+      )}
+
+      {phase !== "idle" && (
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <h4 className="flex items-center gap-2 text-xs font-medium text-foreground">
+              Progress
+              {isLoading && (
+                <span className="working-indicator-bg h-1 w-16 rounded-full" />
+              )}
+            </h4>
+            <div className="flex items-center gap-2.5 text-[11px] text-muted-foreground">
+              {totalPages > 0 && (
+                <span className="tabular-nums">
+                  {donePages}/{totalPages}
                 </span>
+              )}
+              {elapsed && <span className="tabular-nums">{elapsed}</span>}
+            </div>
+          </div>
+
+          {totalPages > 0 && (
+            <div
+              className="h-1 w-full bg-border"
+              role="progressbar"
+              aria-label="Pages generated"
+              aria-valuemin={0}
+              aria-valuemax={totalPages}
+              aria-valuenow={donePages}
+            >
+              <div
+                className="h-full bg-gradient-to-r from-brand-muted to-brand transition-all duration-500 ease-out"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          )}
+
+          <div
+            className="max-h-56 space-y-2 overflow-y-auto px-4 py-3"
+            role="status"
+            aria-live="polite"
+          >
+            {isLoading && statusLine && (
+              <div className="flex items-center gap-2 text-xs text-foreground">
+                <LuLoader2
+                  className="h-3 w-3 shrink-0 animate-spin text-brand"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 break-words">{statusLine}</span>
+                {state.progress && state.progress.total > 0 && (
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    ({state.progress.current}/{state.progress.total})
+                  </span>
+                )}
               </div>
             )}
+
             {state.crawlComplete && (
-              <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
-                <LuCheck className="h-3 w-3" />
-                <span>Crawl complete: {state.crawlComplete.pagesFound} pages found</span>
-              </div>
-            )}
-            {state.currentPage && (
-              <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
-                <LuLoader2 className="h-3 w-3 animate-spin" />
+              <div
+                className={`flex items-center gap-2 text-xs ${
+                  state.crawlComplete.pagesFound > 0
+                    ? "text-muted-foreground"
+                    : "text-warning"
+                }`}
+              >
+                {state.crawlComplete.pagesFound > 0 ? (
+                  <LuCheck
+                    className="h-3 w-3 shrink-0 text-success"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <LuAlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+                )}
                 <span>
-                  Generating: {state.currentPage.path} ({state.currentPage.pageIndex + 1}/
-                  {state.currentPage.totalPages})
+                  Crawl complete — {state.crawlComplete.pagesFound} page
+                  {state.crawlComplete.pagesFound === 1 ? "" : "s"} found
                 </span>
               </div>
             )}
-            {state.completedPages.length > 0 && (
-              <div className="space-y-1">
-                {state.completedPages.map((path) => (
-                  <div
-                    key={path}
-                    className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400"
+
+            {(state.completedPages.length > 0 ||
+              state.failedPages.length > 0) && (
+              <ul className="space-y-1.5 border-t border-border pt-2">
+                {state.completedPages.map((path, index) => (
+                  <li
+                    key={`done-${index}-${path}`}
+                    className="flex items-center gap-2 text-xs text-muted-foreground"
                   >
-                    <LuCheck className="h-3 w-3" />
-                    <span>{path}</span>
-                  </div>
+                    <LuCheck
+                      className="h-3 w-3 shrink-0 text-success"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 truncate font-mono text-[11px]">
+                      {path}
+                    </span>
+                  </li>
                 ))}
-              </div>
-            )}
-            {state.errors.length > 0 && (
-              <div className="space-y-1">
-                {state.errors.map((path) => (
-                  <div
-                    key={path}
-                    className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400"
+
+                {state.failedPages.map((path, index) => (
+                  <li
+                    key={`failed-${index}-${path}`}
+                    className="flex items-center gap-2 text-xs text-danger"
                   >
-                    <LuX className="h-3 w-3" />
-                    <span>{path}</span>
-                  </div>
+                    <LuX className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span className="min-w-0 truncate font-mono text-[11px]">
+                      {path}
+                    </span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
           </div>
         </div>

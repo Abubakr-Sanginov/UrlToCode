@@ -158,3 +158,6 @@ evals_data
 
 # Temporary video evals (Remove before merge)
 video_evals
+
+# Sites saved by the "open folder & run" feature
+generated_sites/

@@ -41,8 +41,10 @@ function extractTagName(html: string): string {
 
 function summarizeLatestChange(commit: Commit | null): string | null {
   if (!commit) return null;
-  if (commit.type === "code_create") return "Imported existing code.";
-
+  if (commit.type === "code_create") {
+    // Cloned site pages carry their path; plain code imports do not.
+    return commit.label ? `Cloned page ${commit.label}` : "Imported existing code.";
+  }
   const text = commit.inputs.text.trim();
   if (text.length > 0) return text;
 
@@ -290,33 +292,36 @@ function Sidebar({
 
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="shrink-0 border-b border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-4 py-2">
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 border-b border-border bg-card px-4 py-2">
         <Variants />
       </div>
 
       {/* Prominent banner when viewing an older version */}
       {isViewingOlderVersion && currentVersionNumber !== null && (
-        <div className="shrink-0 border-b border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/30 px-4 py-2.5">
+        <div className="shrink-0 border-b border-border bg-muted px-4 py-2.5">
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <LuHistory className="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-violet-900 dark:text-violet-200 truncate">
-                  Viewing v{currentVersionNumber} of {totalVersions}
-                </p>
-              </div>
+            <div className="flex min-w-0 items-center gap-2">
+              <LuHistory
+                className="h-4 w-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <p className="min-w-0 truncate text-sm font-medium text-foreground">
+                Viewing v{currentVersionNumber} of {totalVersions}
+              </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button
+                type="button"
                 onClick={onOpenVersions}
-                className="rounded-lg border border-violet-400 dark:border-violet-600 px-3 py-1.5 text-xs font-semibold text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/40 transition-colors"
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 All versions
               </button>
               <button
+                type="button"
                 onClick={() => latestCommitHash && setHead(latestCommitHash)}
-                className="rounded-lg bg-violet-600 hover:bg-violet-700 dark:bg-violet-500 dark:hover:bg-violet-400 px-3 py-1.5 text-xs font-semibold text-white dark:text-violet-950 transition-colors"
+                className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground transition-colors hover:bg-brand-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Back to latest
               </button>
@@ -328,14 +333,14 @@ function Sidebar({
       {/* Scrollable content */}
       <div
         ref={middlePaneRef}
-        className="flex-1 min-h-0 overflow-y-auto sidebar-scrollbar-stable px-6 pt-4"
+        className="sidebar-scrollbar-stable min-h-0 flex-1 overflow-y-auto px-5 pt-4"
       >
         {latestChangeSummary && (
           <div className="mb-4 flex flex-col items-end">
-            <div className="inline-block max-w-[85%] rounded-2xl rounded-br-md bg-violet-100 px-4 py-2.5 dark:bg-violet-900/30">
+            <div className="inline-block max-w-[85%] rounded-2xl rounded-br-md border border-border bg-muted px-3.5 py-2.5">
               <p
                 ref={promptTextRef}
-                className={`text-[13px] text-violet-950 dark:text-violet-100 break-words whitespace-pre-wrap ${
+                className={`whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground ${
                   !isPromptExpanded ? "line-clamp-[10]" : ""
                 }`}
               >
@@ -343,17 +348,24 @@ function Sidebar({
               </p>
               {selectedElementTag && (
                 <div className="mt-1.5 flex items-center gap-1.5">
-                  <LuMousePointerClick className="w-3 h-3 text-violet-500 dark:text-violet-400" />
-                  <span className="text-[11px] text-violet-600 dark:text-violet-300">
-                    Selected: <code className="font-mono text-[10px] bg-violet-200/60 dark:bg-violet-800/50 px-1 py-0.5 rounded">&lt;{selectedElementTag}&gt;</code>
+                  <LuMousePointerClick
+                    className="h-3 w-3 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="text-[11px] text-muted-foreground">
+                    Selected:{" "}
+                    <code className="rounded bg-background px-1 py-0.5 font-mono text-[10px]">
+                      &lt;{selectedElementTag}&gt;
+                    </code>
                   </span>
                 </div>
               )}
               {(isPromptClamped || isPromptExpanded) && (
-                <div className="flex justify-end mt-1.5">
+                <div className="mt-1.5 flex justify-end">
                   <button
+                    type="button"
                     onClick={() => setIsPromptExpanded(!isPromptExpanded)}
-                    className="text-[11px] font-medium text-gray-600 bg-white/70 hover:bg-white dark:text-gray-300 dark:bg-zinc-800/70 dark:hover:bg-zinc-800 px-2 py-0.5 rounded-full transition-colors shadow-sm"
+                    className="rounded-full border border-border bg-card px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {isPromptExpanded ? "less" : "more"}
                   </button>
@@ -361,12 +373,13 @@ function Sidebar({
               )}
             </div>
               {latestChangeImages.length > 0 && (
-                <div className="mt-2 flex gap-2 flex-wrap justify-end">
+                <div className="mt-2 flex flex-wrap justify-end gap-2">
                   {latestChangeImages.map((image, index) => (
                     <button
                       key={`${image.slice(0, 40)}-${index}`}
+                      type="button"
                       onClick={() => setLightboxImage(image)}
-                      className="shrink-0 cursor-zoom-in rounded-lg border border-gray-200 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900 hover:border-violet-300 dark:hover:border-violet-500 transition-colors"
+                      className="shrink-0 cursor-zoom-in rounded-lg border border-border bg-card p-1 transition-colors hover:border-brand-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <img
                         src={image}
@@ -384,7 +397,7 @@ function Sidebar({
                     <video
                       key={`${video.slice(0, 40)}-${index}`}
                       src={video}
-                      className="w-full rounded-lg border border-gray-200 dark:border-zinc-700"
+                      className="w-full rounded-lg border border-border"
                       controls
                       preload="metadata"
                     />
@@ -395,14 +408,14 @@ function Sidebar({
         )}
 
         {showWorkingIndicator && (
-          <div className="working-indicator-bg mb-3 rounded-xl border border-violet-200 dark:border-violet-800 px-3 py-2 transition-all duration-500">
+          <div className="working-indicator-bg mb-3 rounded-xl border border-border px-3 py-2">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+              <div className="flex items-center gap-2 text-sm text-foreground">
                 <WorkingPulse />
                 <span>Working...</span>
               </div>
-              <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-                Time so far {elapsedSeconds ? `${elapsedSeconds}s` : "--"}
+              <div className="text-xs font-medium tabular-nums text-muted-foreground">
+                {elapsedSeconds ? `${elapsedSeconds}s` : "--"}
               </div>
             </div>
           </div>
@@ -414,7 +427,7 @@ function Sidebar({
           !isSelectedVariantComplete &&
           !isSelectedVariantError &&
           isSlowModel(selectedVariant?.model) && (
-          <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          <div className="mb-3 rounded-lg border border-warning-border bg-warning-subtle px-3 py-2 text-xs leading-5 text-warning">
             Slow, high quality model. May take 5-10 mins on some images/videos.
           </div>
         )}
@@ -431,17 +444,18 @@ function Sidebar({
           <div className="mb-3 flex items-center justify-end gap-2">
             {totalGenerationTime && (
               <span
-                className="text-[11px] font-medium tabular-nums text-gray-400 dark:text-gray-500"
+                className="text-[11px] font-medium tabular-nums text-muted-foreground"
                 data-testid="total-generation-time"
               >
                 {totalGenerationTime}
               </span>
             )}
             <button
+              type="button"
               onClick={regenerate}
-              className="regenerate-btn flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <LuRefreshCw className="w-3.5 h-3.5" />
+              <LuRefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
               Retry
             </button>
           </div>
@@ -452,38 +466,40 @@ function Sidebar({
           <div className="flex w-full">
             <Button
               onClick={cancelCodeGeneration}
-              className="w-full dark:text-white dark:bg-gray-700"
+              variant="outline"
+              className="w-full"
             >
-              Cancel All Generations
+              Cancel all generations
             </Button>
           </div>
         )}
 
         {/* Show error message when selected option has an error */}
         {isSelectedVariantError && (
-          <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md p-3 mb-2">
-            <div className="text-red-800 dark:text-red-200 text-sm">
-              <div className="font-medium mb-1">
+          <div className="mb-2 rounded-lg border border-danger-border bg-danger-subtle p-3">
+            <div className="text-sm text-danger">
+              <div className="mb-1 font-medium">
                 This option failed to generate because
               </div>
               {selectedVariantErrorMessage && (
                 <div className="mb-2">
-                  <div className="text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-900/40 border border-red-300 dark:border-red-700 rounded px-2 py-1 text-xs font-mono break-words">
+                  <div className="break-words rounded border border-danger-border bg-danger/5 px-2 py-1 font-mono text-xs text-danger">
                     {selectedVariantErrorMessage.length > 200 && !isErrorExpanded
                       ? `${selectedVariantErrorMessage.slice(0, 200)}...`
                       : selectedVariantErrorMessage}
                   </div>
                   {selectedVariantErrorMessage.length > 200 && (
                     <button
+                      type="button"
                       onClick={() => setIsErrorExpanded(!isErrorExpanded)}
-                      className="text-red-600 dark:text-red-400 text-xs underline mt-1 hover:text-red-800 dark:hover:text-red-300"
+                      className="mt-1 text-xs text-danger underline underline-offset-2"
                     >
                       {isErrorExpanded ? "Show less" : "Show more"}
                     </button>
                   )}
                 </div>
               )}
-              <div>
+              <div className="text-danger/90">
                 {canRegenerate
                   ? "Click Retry to run this version's request again."
                   : "Switch to another option above to make updates."}
@@ -497,7 +513,7 @@ function Sidebar({
       {(appState === AppState.CODE_READY || isSelectedVariantComplete) &&
         !isSelectedVariantError && (
           <div
-            className="shrink-0 border-t border-gray-200 bg-gray-50 dark:border-zinc-800 dark:bg-zinc-900 px-4 py-4"
+            className="shrink-0 border-t border-border bg-card px-4 py-4"
             onDragEnter={() => setIsDragging(true)}
             onDragLeave={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node)) {
@@ -509,10 +525,17 @@ function Sidebar({
           >
             {/* Branching notice when editing an older version */}
             {isViewingOlderVersion && currentVersionNumber !== null && (
-              <div className="mb-2 flex items-center gap-2 rounded-xl border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 px-3 py-2">
-                <LuHistory className="w-3.5 h-3.5 shrink-0 text-violet-600 dark:text-violet-400" />
-                <span className="text-xs text-violet-800 dark:text-violet-200">
-                  You're editing <span className="font-semibold">v{currentVersionNumber}</span> — updates will create a new version branching from it.
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2">
+                <LuHistory
+                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span className="text-xs leading-5 text-muted-foreground">
+                  You're editing{" "}
+                  <span className="font-medium text-foreground">
+                    v{currentVersionNumber}
+                  </span>{" "}
+                  — updates will create a new version branching from it.
                 </span>
               </div>
             )}
@@ -521,30 +544,44 @@ function Sidebar({
             {inSelectAndEditMode && (
               <div className="mb-2">
                 {selectedElement ? (
-                  <div className="flex items-center justify-between rounded-xl border border-violet-300 dark:border-violet-600 bg-violet-50 dark:bg-violet-900/20 px-3 py-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <LuMousePointerClick className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 shrink-0" />
-                      <span className="text-sm text-violet-700 dark:text-violet-300 truncate">
-                        Selected: <code className="font-mono text-xs bg-violet-100 dark:bg-violet-800/50 px-1.5 py-0.5 rounded">&lt;{selectedElement.tagName.toLowerCase()}&gt;</code>
+                  <div className="flex items-center justify-between rounded-lg border border-brand-border bg-brand-subtle px-3 py-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <LuMousePointerClick
+                        className="h-3.5 w-3.5 shrink-0 text-brand"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate text-sm text-foreground">
+                        Selected:{" "}
+                        <code className="rounded bg-card px-1.5 py-0.5 font-mono text-xs">
+                          &lt;{selectedElement.tagName.toLowerCase()}&gt;
+                        </code>
                       </span>
                     </div>
                     <button
+                      type="button"
                       onClick={() => setSelectedElement(null)}
-                      className="shrink-0 ml-3 p-0.5 text-violet-400 hover:text-violet-700 dark:hover:text-violet-200 transition-colors"
+                      className="ml-3 shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title="Clear selection"
+                      aria-label="Clear selection"
                     >
-                      <LuX className="w-3.5 h-3.5" />
+                      <LuX className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between rounded-xl border border-violet-200 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 px-3 py-2">
+                  <div className="flex items-center justify-between rounded-lg border border-border bg-muted px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <LuMousePointerClick className="w-3.5 h-3.5 text-violet-500 dark:text-violet-400 shrink-0" />
-                      <span className="text-sm font-medium text-violet-700 dark:text-violet-300">Click an element to edit it</span>
+                      <LuMousePointerClick
+                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm font-medium text-foreground">
+                        Click an element to edit it
+                      </span>
                     </div>
                     <button
+                      type="button"
                       onClick={toggleInSelectAndEditMode}
-                      className="shrink-0 ml-3 text-sm text-violet-500 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200 transition-colors"
+                      className="ml-3 shrink-0 rounded text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       Exit
                     </button>
@@ -552,7 +589,7 @@ function Sidebar({
                 )}
               </div>
             )}
-            <div className="relative w-full overflow-hidden rounded-2xl border-2 border-violet-300 bg-white transition-all focus-within:border-violet-500 dark:border-violet-500/50 dark:bg-zinc-900 dark:focus-within:border-violet-400">
+            <div className="relative w-full overflow-hidden rounded-xl border border-input bg-background transition-colors focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30">
               <UpdateImagePreview
                 updateImages={updateImages}
                 setUpdateImages={setUpdateImages}
@@ -577,45 +614,61 @@ function Sidebar({
                 value={updateInstruction}
                 data-testid="update-input"
                 rows={1}
-                className="max-h-40 w-full resize-none border-0 bg-transparent px-4 pt-4 pb-6 text-[15px] leading-6 text-gray-800 placeholder:text-gray-400 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
+                className="max-h-40 w-full resize-none border-0 bg-transparent px-3.5 pb-6 pt-3.5 text-[15px] leading-6 text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
-              <div className="flex items-center justify-between px-3 pb-3">
+              <div className="flex items-center justify-between px-2.5 pb-2.5">
                 <div className="flex items-center gap-1">
                   <UpdateImageUpload
                     updateImages={updateImages}
                     setUpdateImages={setUpdateImages}
                   />
                   <button
+                    type="button"
                     onClick={toggleInSelectAndEditMode}
                     data-testid="select-edit-toggle-prompt"
-                    className={`rounded-lg p-2 transition-colors ${
+                    className={`rounded-lg p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       inSelectAndEditMode
-                        ? "bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-400"
-                        : "text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
+                        ? "bg-brand-subtle text-brand"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
                     }`}
-                    title={inSelectAndEditMode ? "Exit selection mode" : "Select an element in the preview to target your edit"}
+                    title={
+                      inSelectAndEditMode
+                        ? "Exit selection mode"
+                        : "Select an element in the preview to target your edit"
+                    }
                   >
-                    <LuMousePointerClick className="w-[18px] h-[18px]" />
+                    <LuMousePointerClick
+                      className="h-[18px] w-[18px]"
+                      aria-hidden="true"
+                    />
                   </button>
                   <DesignSystemSelector {...designSystem} compact />
                 </div>
                 <button
+                  type="button"
                   onClick={() => doUpdate(updateInstruction)}
                   disabled={!updateInstruction.trim()}
-                  className={`rounded-xl p-2 transition-colors update-btn ${
+                  className={`rounded-lg p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     updateInstruction.trim()
-                      ? "bg-violet-600 text-white hover:bg-violet-700 dark:bg-violet-500 dark:hover:bg-violet-400"
-                      : "cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-zinc-700 dark:text-zinc-500"
+                      ? "bg-brand text-brand-foreground hover:bg-brand-muted"
+                      : "cursor-not-allowed bg-muted text-muted-foreground"
                   }`}
                   title="Send"
+                  aria-label="Send"
                 >
-                  <LuArrowUp className="w-[18px] h-[18px]" strokeWidth={2.5} />
+                  <LuArrowUp
+                    className="h-[18px] w-[18px]"
+                    strokeWidth={2.5}
+                    aria-hidden="true"
+                  />
                 </button>
               </div>
 
               {isDragging && (
-                <div className="absolute inset-0 bg-blue-50/90 dark:bg-gray-800/90 border-2 border-dashed border-blue-400 dark:border-blue-600 rounded-xl flex items-center justify-center pointer-events-none z-10">
-                  <p className="text-blue-600 dark:text-blue-400 font-medium">Drop images here</p>
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-brand bg-background/90">
+                  <p className="text-sm font-medium text-brand">
+                    Drop images here
+                  </p>
                 </div>
               )}
             </div>

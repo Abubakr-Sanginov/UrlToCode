@@ -33,4 +33,7 @@ function Badge({ className, variant, ...props }: BadgeProps) {
   )
 }
 
+// Component and its variant helper ship together by design (shadcn/ui
+// convention); fast refresh only warns, it still works.
+// eslint-disable-next-line react-refresh/only-export-components
 export { Badge, badgeVariants }

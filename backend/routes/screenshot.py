@@ -69,8 +69,8 @@ async def capture_screenshot(
         response = await client.get(api_base_url, params=params)
         if response.status_code == 200 and response.content:
             return response.content
-        else:
-            raise Exception("Error taking screenshot")
+        detail = response.text[:300].strip() or f"HTTP {response.status_code}"
+        raise RuntimeError(f"screenshotone returned {response.status_code}: {detail}")
 
 
 class ScreenshotRequest(BaseModel):
@@ -100,8 +100,8 @@ async def app_screenshot(request: ScreenshotRequest):
 
         return ScreenshotResponse(url=data_url)
     except ValueError as e:
-        # Handle URL normalization errors
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bad client input, not a server failure
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # Handle other errors
         raise HTTPException(status_code=500, detail=f"Error capturing screenshot: {str(e)}")

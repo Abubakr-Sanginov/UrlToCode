@@ -20,5 +20,14 @@ RUN poetry install
 # Install Chromium and Linux libraries needed by Playwright screenshot previews.
 RUN playwright install --with-deps chromium
 
+# The crawler drives a visible browser (headless Chromium gets served bot
+# checks instead of pages), so the image needs a virtual display for it.
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb && rm -rf /var/lib/apt/lists/*
+
 # Copy the current directory contents into the container at /app
 COPY ./ /app/
+
+# Start under a virtual display; set CRAWLER_HEADLESS=1 to opt out of the
+# headed crawler instead.
+ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1366x768x24"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7001"]

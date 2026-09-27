@@ -13,6 +13,11 @@ interface IconStripProps {
   onOpenSettings: () => void;
 }
 
+const NAV_ITEM =
+  "flex items-center justify-center rounded-lg p-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5";
+const NAV_ACTIVE = "bg-accent text-foreground";
+const NAV_IDLE = "text-muted-foreground hover:bg-accent/60 hover:text-foreground";
+
 function IconStrip({
   isHistoryOpen,
   isEditorOpen,
@@ -26,79 +31,82 @@ function IconStrip({
   onOpenSettings,
 }: IconStripProps) {
   return (
-    <div className="flex w-full items-center justify-between border-b border-gray-200 bg-gray-50 px-2 py-2 dark:border-zinc-800 dark:bg-zinc-900 lg:h-full lg:w-16 lg:flex-col lg:items-center lg:gap-y-3 lg:border-b-0 lg:border-r lg:px-0 lg:py-4">
-      {/* Logo */}
+    <nav
+      aria-label="Main"
+      className="flex w-full items-center justify-between border-b border-border bg-card px-2 py-2 lg:h-full lg:w-16 lg:flex-col lg:items-center lg:gap-y-2 lg:border-b-0 lg:border-r lg:px-0 lg:py-4"
+    >
       <button
+        type="button"
         onClick={onLogoClick}
-        className="rounded-lg p-2 transition-colors hover:bg-gray-200/70 dark:hover:bg-zinc-800 lg:mb-2 lg:p-1"
+        aria-label="Go to editor"
+        title="Go to editor"
+        className="rounded-lg p-2 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:mb-1 lg:p-1.5"
       >
-        <img
-          src="/favicon/main.png"
-          alt="Logo"
-          className="w-5 h-5 dark:invert"
-        />
+        <img src="/favicon/main.png" alt="" className="h-5 w-5 dark:invert" />
       </button>
 
       <div className="flex items-center gap-1 lg:flex-col lg:gap-0 lg:contents">
-        {/* Editor */}
         {showEditor && (
           <button
+            type="button"
             onClick={onToggleEditor}
-            className={`flex items-center justify-center rounded-lg p-2 transition-colors lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5 ${
-              isEditorOpen
-                ? "text-gray-900 dark:text-white"
-                : "text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
-            }`}
+            aria-label="Editor"
+            aria-current={isEditorOpen ? "page" : undefined}
+            className={`${NAV_ITEM} ${isEditorOpen ? NAV_ACTIVE : NAV_IDLE}`}
             title="Editor"
           >
-            <LuCode className="w-[18px] h-[18px]" />
-            <span className="hidden text-[10px] leading-none lg:block">Editor</span>
+            <LuCode className="h-[18px] w-[18px]" aria-hidden="true" />
+            <span className="hidden text-[10px] leading-none lg:block">
+              Editor
+            </span>
           </button>
         )}
 
-        {/* Versions */}
         {showHistory && (
           <button
+            type="button"
             onClick={onToggleHistory}
-            className={`flex items-center justify-center rounded-lg p-2 transition-colors lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5 ${
-              isHistoryOpen
-                ? "text-gray-900 dark:text-white"
-                : "text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
-            }`}
+            aria-label="Versions"
+            aria-current={isHistoryOpen ? "page" : undefined}
+            className={`${NAV_ITEM} ${isHistoryOpen ? NAV_ACTIVE : NAV_IDLE}`}
             title="Versions"
           >
-            <LuClock className="w-[18px] h-[18px]" />
-            <span className="hidden text-[10px] leading-none lg:block">Versions</span>
+            <LuClock className="h-[18px] w-[18px]" aria-hidden="true" />
+            <span className="hidden text-[10px] leading-none lg:block">
+              Versions
+            </span>
           </button>
         )}
 
         <button
+          type="button"
           onClick={onNewProject}
-          className="flex items-center justify-center rounded-lg p-2 transition-colors bg-violet-100 text-violet-700 hover:bg-violet-200 lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5 dark:bg-violet-900/40 dark:text-violet-200 dark:hover:bg-violet-900/60"
+          aria-label="Start a new project"
+          className={`${NAV_ITEM} border border-border bg-background text-foreground hover:bg-accent`}
           title="Start a new project"
         >
-          <LuPlus className="w-[18px] h-[18px]" />
-          <span className="hidden text-[10px] leading-none lg:block font-medium">New</span>
+          <LuPlus className="h-[18px] w-[18px]" aria-hidden="true" />
+          <span className="hidden text-[10px] font-medium leading-none lg:block">
+            New
+          </span>
         </button>
       </div>
 
-      {/* Spacer pushes settings to bottom */}
+      {/* Spacer pushes settings to the bottom on desktop */}
       <div className="hidden flex-1 lg:block" />
 
-      {/* Settings */}
       <button
+        type="button"
         onClick={onOpenSettings}
-        className={`flex items-center justify-center rounded-lg p-2 transition-colors lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5 ${
-          isSettingsOpen
-            ? "text-gray-900 dark:text-white"
-            : "text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-        }`}
+        aria-label="Settings"
+        aria-current={isSettingsOpen ? "page" : undefined}
+        className={`${NAV_ITEM} ${isSettingsOpen ? NAV_ACTIVE : NAV_IDLE}`}
         title="Settings"
       >
-        <LuSettings className="w-[18px] h-[18px]" />
+        <LuSettings className="h-[18px] w-[18px]" aria-hidden="true" />
         <span className="hidden text-[10px] leading-none lg:block">Settings</span>
       </button>
-    </div>
+    </nav>
   );
 }
 

@@ -17,8 +17,9 @@ module.exports = {
     },
     extend: {
       colors: {
-        button: "#ffd803",
-        highlight: "#ffd803",
+        // Page background, one step behind `card`, so raised surfaces read
+        // without needing a shadow.
+        canvas: "hsl(var(--canvas))",
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -52,11 +53,44 @@ module.exports = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Single accent for selection, focus and primary actions.
+        brand: {
+          DEFAULT: "hsl(var(--brand))",
+          foreground: "hsl(var(--brand-foreground))",
+          muted: "hsl(var(--brand-muted))",
+          subtle: "hsl(var(--brand-subtle))",
+          border: "hsl(var(--brand-border))",
+        },
+        // Status colors. Desaturated so they coexist in one list.
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          subtle: "hsl(var(--success-subtle))",
+          border: "hsl(var(--success-border))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          subtle: "hsl(var(--warning-subtle))",
+          border: "hsl(var(--warning-border))",
+        },
+        danger: {
+          DEFAULT: "hsl(var(--danger))",
+          subtle: "hsl(var(--danger-subtle))",
+          border: "hsl(var(--danger-border))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      boxShadow: {
+        // Tight, low-opacity elevation. Enough to lift a card off the canvas
+        // without the heavy drop shadows the old surfaces used.
+        card: "0 1px 2px 0 hsl(222 30% 12% / 0.04), 0 1px 3px 0 hsl(222 30% 12% / 0.06)",
+        raised:
+          "0 2px 4px -1px hsl(222 30% 12% / 0.06), 0 4px 12px -2px hsl(222 30% 12% / 0.08)",
+        overlay:
+          "0 4px 8px -2px hsl(222 30% 12% / 0.08), 0 12px 28px -6px hsl(222 30% 12% / 0.14)",
       },
       keyframes: {
         "accordion-down": {

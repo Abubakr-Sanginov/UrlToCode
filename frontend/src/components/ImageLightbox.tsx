@@ -156,12 +156,12 @@ function ImageLightbox({ image, onClose }: ImageLightboxProps) {
   return (
     <Dialog open={!!image} onOpenChange={(open) => !open && onClose()}>
       <DialogPortal>
-        <DialogOverlay className="bg-black/90 backdrop-blur-md" />
+        <DialogOverlay className="bg-foreground/85 backdrop-blur-sm" />
         <div className="fixed inset-0 z-50">
           {/* Scrollable viewport - drag to scroll, click to close */}
           <div
             ref={viewportRef}
-            className="h-full w-full overflow-auto cursor-grab"
+            className="h-full w-full cursor-grab overflow-auto"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -174,7 +174,7 @@ function ImageLightbox({ image, onClose }: ImageLightboxProps) {
                 <img
                   src={image}
                   alt="Reference image"
-                  className="rounded-lg shadow-2xl select-none shrink-0 m-auto"
+                  className="m-auto shrink-0 select-none rounded-lg shadow-overlay"
                   draggable={false}
                   onClick={(e) => e.stopPropagation()}
                   style={
@@ -200,48 +200,56 @@ function ImageLightbox({ image, onClose }: ImageLightboxProps) {
 
           {/* Zoom controls - bottom center pill */}
           <div
-            className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-black/60 px-3 py-2 shadow-lg backdrop-blur-md"
+            className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1.5 shadow-overlay"
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
           >
             <button
+              type="button"
               onClick={zoomOut}
-              className="rounded-full p-1.5 text-white/80 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30"
+              className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               disabled={zoom <= MIN_ZOOM}
               title="Zoom out"
+              aria-label="Zoom out"
             >
-              <LuMinus className="h-4 w-4" />
+              <LuMinus className="h-4 w-4" aria-hidden="true" />
             </button>
             <button
+              type="button"
               onClick={zoomToDefault}
-              className="min-w-[3.5rem] rounded-full px-3 py-1 text-center text-xs font-medium text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+              className="min-w-[3.5rem] rounded-full px-3 py-1 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Reset zoom"
             >
               {Math.round(zoom * 100)}%
             </button>
             <button
+              type="button"
               onClick={zoomIn}
-              className="rounded-full p-1.5 text-white/80 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30"
+              className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               disabled={zoom >= MAX_ZOOM}
               title="Zoom in"
+              aria-label="Zoom in"
             >
-              <LuPlus className="h-4 w-4" />
+              <LuPlus className="h-4 w-4" aria-hidden="true" />
             </button>
-            <div className="mx-1 h-4 w-px bg-white/20" />
+            <div className="mx-1 h-4 w-px bg-border" />
             <button
+              type="button"
               onClick={zoomToFit}
-              className="rounded-full px-2.5 py-1 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+              className="rounded-full px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Fit to screen"
             >
               Fit
             </button>
-            <div className="mx-1 h-4 w-px bg-white/20" />
+            <div className="mx-1 h-4 w-px bg-border" />
             <button
+              type="button"
               onClick={onClose}
-              className="rounded-full p-1.5 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+              className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               title="Close"
+              aria-label="Close"
             >
-              <LuX className="h-4 w-4" />
+              <LuX className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

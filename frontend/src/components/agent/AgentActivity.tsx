@@ -5,6 +5,7 @@ import { AppState } from "../../types";
 import {
   AgentEvent,
   AgentEventType,
+  ToolImage,
 } from "../commits/types";
 import {
   BsChatDots,
@@ -32,7 +33,10 @@ import {
 } from "./generation-time";
 
 SyntaxHighlighterBase.registerLanguage("html", html);
-const SyntaxHighlighter = SyntaxHighlighterBase as any;
+const SyntaxHighlighter =
+  SyntaxHighlighterBase as unknown as React.ComponentType<
+    Record<string, unknown>
+  >;
 
 function ExpandablePrompt({ prompt }: { prompt: string }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -63,7 +67,7 @@ function ExpandablePrompt({ prompt }: { prompt: string }) {
     <div>
       <p
         ref={promptRef}
-        className={`whitespace-pre-wrap break-words text-xs text-gray-600 dark:text-gray-300 ${
+        className={`whitespace-pre-wrap break-words text-xs text-muted-foreground ${
           !isExpanded ? "line-clamp-4" : ""
         }`}
       >
@@ -75,7 +79,7 @@ function ExpandablePrompt({ prompt }: { prompt: string }) {
             type="button"
             onClick={() => setIsExpanded((previous) => !previous)}
             aria-expanded={isExpanded}
-            className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+            className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent"
           >
             {isExpanded ? "Less" : "More"}
           </button>
@@ -154,39 +158,39 @@ function isSuccessfulExtractedAsset(asset: unknown): boolean {
 
 function getEventIcon(type: AgentEventType, toolName?: string) {
   if (type === "thinking") {
-    return <BsLightbulb className="text-yellow-500" />;
+    return <BsLightbulb className="text-muted-foreground" />;
   }
   if (type === "assistant") {
-    return <BsChatDots className="text-blue-500" />;
+    return <BsChatDots className="text-muted-foreground" />;
   }
   if (toolName === "create_file") {
-    return <BsFileEarmarkPlus className="text-indigo-500" />;
+    return <BsFileEarmarkPlus className="text-muted-foreground" />;
   }
   if (toolName === "edit_file") {
-    return <BsPencilSquare className="text-purple-500" />;
+    return <BsPencilSquare className="text-muted-foreground" />;
   }
   if (toolName === "generate_images") {
-    return <BsImage className="text-pink-500" />;
+    return <BsImage className="text-muted-foreground" />;
   }
   if (toolName === "remove_backgrounds") {
-    return <BsScissors className="text-teal-500" />;
+    return <BsScissors className="text-muted-foreground" />;
   }
   if (toolName === "edit_images") {
-    return <BsImage className="text-violet-500" />;
+    return <BsImage className="text-muted-foreground" />;
   }
   if (toolName === "retrieve_option") {
-    return <BsFiles className="text-slate-500" />;
+    return <BsFiles className="text-muted-foreground" />;
   }
   if (toolName === "save_assets") {
-    return <BsBookmarkCheck className="text-emerald-500" />;
+    return <BsBookmarkCheck className="text-success" />;
   }
   if (toolName === "extract_assets") {
-    return <BsBoundingBox className="text-orange-500" />;
+    return <BsBoundingBox className="text-muted-foreground" />;
   }
   if (toolName === "screenshot_preview") {
-    return <BsCamera className="text-cyan-500" />;
+    return <BsCamera className="text-muted-foreground" />;
   }
-  return <BsFileEarmarkPlus className="text-gray-500" />;
+  return <BsFileEarmarkPlus className="text-muted-foreground" />;
 }
 
 function getEventTitle(event: AgentEvent): string {
@@ -206,8 +210,8 @@ function getEventTitle(event: AgentEvent): string {
       return event.status === "running" ? "Editing file" : "Edited file";
     }
     if (event.toolName === "generate_images") {
-      const input = event.input as any;
-      const output = event.output as any;
+      const input = event.input;
+      const output = event.output;
       const count = output?.images?.length || input?.count || 0;
       if (event.status === "running") {
         return count ? `Generating ${count} image${count !== 1 ? "s" : ""}` : "Generating images";
@@ -215,8 +219,8 @@ function getEventTitle(event: AgentEvent): string {
       return count ? `Generated ${count} image${count !== 1 ? "s" : ""}` : "Generated images";
     }
     if (event.toolName === "remove_backgrounds") {
-      const rbInput = event.input as any;
-      const rbOutput = event.output as any;
+      const rbInput = event.input;
+      const rbOutput = event.output;
       const rbCount = rbOutput?.images?.length || rbInput?.image_urls?.length || 0;
       if (event.status === "running") {
         return rbCount > 1 ? `Removing ${rbCount} backgrounds` : "Removing background";
@@ -224,8 +228,8 @@ function getEventTitle(event: AgentEvent): string {
       return rbCount > 1 ? `Removed ${rbCount} backgrounds` : "Background removed";
     }
     if (event.toolName === "edit_images") {
-      const editInput = event.input as { edits?: unknown[] } | null;
-      const editOutput = event.output as { images?: unknown[] } | null;
+      const editInput = event.input;
+      const editOutput = event.output;
       const editCount =
         editOutput?.images?.length || editInput?.edits?.length || 0;
       if (event.status === "running") {
@@ -243,8 +247,8 @@ function getEventTitle(event: AgentEvent): string {
         : "Retrieved option";
     }
     if (event.toolName === "save_assets") {
-      const saveInput = event.input as any;
-      const saveOutput = event.output as any;
+      const saveInput = event.input;
+      const saveOutput = event.output;
       const saveCount = saveOutput?.images?.length || saveInput?.asset_ids?.length || 0;
       if (event.status === "running") {
         return saveCount > 1 ? `Saving ${saveCount} assets` : "Saving asset";
@@ -303,19 +307,19 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
       json = json.slice(0, 900) + "...";
     }
     return (
-      <pre className="mt-2 rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-xs text-gray-700 dark:text-gray-200 overflow-x-auto">
+      <pre className="mt-2 rounded-md bg-muted p-2 text-xs text-foreground overflow-x-auto">
         {json}
       </pre>
     );
   };
 
-  const output = event.output as any;
-  const input = event.input as any;
+  const output = event.output;
+  const input = event.input;
   const hasError = Boolean(output?.error);
   const images =
-    output && Array.isArray(output.images) ? (output.images as Array<any>) : null;
+    output && Array.isArray(output.images) ? output.images : null;
   const edits =
-    output && Array.isArray(output.edits) ? (output.edits as Array<any>) : null;
+    output && Array.isArray(output.edits) ? output.edits : null;
   const extractedAssets =
     output && Array.isArray(output.assets) ? (output.assets as Array<unknown>) : null;
   const successfulExtractedAssets =
@@ -330,16 +334,16 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
       : [];
 
   return (
-    <div className="text-sm text-gray-700 dark:text-gray-200">
+    <div className="text-sm text-foreground">
       {hasError && (
-        <div className="rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/30 p-3">
-          <div className="text-xs uppercase tracking-wide text-red-500">Error</div>
-          <div className="mt-1 text-sm text-red-700 dark:text-red-200">
+        <div className="rounded-md border border-danger-border bg-danger-subtle p-3">
+          <div className="text-xs uppercase tracking-wide text-danger">Error</div>
+          <div className="mt-1 text-sm text-danger">
             {output?.error}
           </div>
           {event.input && (
             <div className="mt-2">
-              <div className="text-xs uppercase tracking-wide text-red-400">
+              <div className="text-xs uppercase tracking-wide text-danger">
                 Input
               </div>
               {renderJson(event.input)}
@@ -356,27 +360,27 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
           {edits.map((edit, index) => (
             <div
               key={`${edit.old_text}-${index}`}
-              className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/60 p-3"
+              className="rounded-md border border-border bg-card p-3"
             >
-              <div className="text-xs uppercase tracking-wide text-gray-400">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
                 Edit {index + 1}
               </div>
               <div className="mt-2 grid gap-2">
                 <div>
-                  <div className="text-xs text-gray-500">Old</div>
-                  <div className="mt-1 rounded bg-red-50 dark:bg-red-900/30 p-2 text-xs font-mono text-red-700 dark:text-red-200 break-all">
+                  <div className="text-xs text-muted-foreground">Old</div>
+                  <div className="mt-1 rounded bg-danger-subtle p-2 text-xs font-mono text-danger break-all">
                     {edit.old_text}
                   </div>
                 </div>
                 <div>
-                  <div className="text-xs text-gray-500">New</div>
-                  <div className="mt-1 rounded bg-emerald-50 dark:bg-emerald-900/30 p-2 text-xs font-mono text-emerald-700 dark:text-emerald-200 break-all">
+                  <div className="text-xs text-muted-foreground">New</div>
+                  <div className="mt-1 rounded bg-success-subtle p-2 text-xs font-mono text-success break-all">
                     {edit.new_text}
                   </div>
                 </div>
               </div>
               {edit.replaced !== undefined && (
-                <div className="mt-2 text-xs text-gray-500">
+                <div className="mt-2 text-xs text-muted-foreground">
                   Replaced {edit.replaced} time{edit.replaced === 1 ? "" : "s"}
                 </div>
               )}
@@ -389,9 +393,9 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
         <div>
           {/* While running: show prompts with dividers */}
           {event.status === "running" && input?.prompts && Array.isArray(input.prompts) && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="divide-y divide-border">
               {input.prompts.map((prompt: string, index: number) => (
-                <div key={index} className="text-xs text-gray-600 dark:text-gray-400 py-1.5">
+                <div key={index} className="text-xs text-muted-foreground py-1.5">
                   {prompt}
                 </div>
               ))}
@@ -399,7 +403,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
           )}
           {/* After complete: 50/50 image left, prompt right */}
           {event.status !== "running" && images && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="divide-y divide-border">
               {images.map((item, index) => (
                 <div key={`${item.prompt}-${index}`} className="flex gap-3 py-2">
                   <div className="w-1/2 shrink-0">
@@ -411,12 +415,12 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                         loading="lazy"
                       />
                     ) : (
-                      <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                      <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                         Failed
                       </div>
                     )}
                   </div>
-                  <div className="w-1/2 text-xs text-gray-600 dark:text-gray-400 self-center">
+                  <div className="w-1/2 text-xs text-muted-foreground self-center">
                     {item.prompt}
                   </div>
                 </div>
@@ -430,7 +434,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
         <div>
           {/* While running: show the source images */}
           {event.status === "running" && input?.image_urls && Array.isArray(input.image_urls) && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="divide-y divide-border">
               {input.image_urls.map((url: string, index: number) => (
                 <div key={index} className="py-2">
                   <img
@@ -445,11 +449,11 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
           )}
           {/* After complete: before/after side by side for each image */}
           {event.status !== "running" && output?.images && Array.isArray(output.images) && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
-              {output.images.map((item: any, index: number) => (
+            <div className="divide-y divide-border">
+              {output.images.map((item: ToolImage, index: number) => (
                 <div key={`${item.image_url}-${index}`} className="flex gap-2 py-2">
                   <div className="w-1/2">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Before</div>
+                    <div className="text-xs text-muted-foreground mb-1">Before</div>
                     <img
                       src={item.image_url}
                       alt={`Original image ${index + 1}`}
@@ -458,7 +462,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                     />
                   </div>
                   <div className="w-1/2">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">After</div>
+                    <div className="text-xs text-muted-foreground mb-1">After</div>
                     {item.result_url ? (
                       <div className="relative">
                         <div
@@ -478,7 +482,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                         />
                       </div>
                     ) : (
-                      <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                      <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                         Failed
                       </div>
                     )}
@@ -495,7 +499,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
           {event.status === "running" &&
             input?.edits &&
             Array.isArray(input.edits) && (
-              <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              <div className="divide-y divide-border">
                 {input.edits.map((rawItem: unknown, index: number) => {
                   const item = getRecord(rawItem);
                   const imageUrls = (getArrayField(item, "image_urls") || []).filter(
@@ -510,10 +514,10 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                   return (
                     <div key={`${prompt || "edit"}-${index}`} className="py-3">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                        <div className="text-xs font-medium text-foreground">
                           Edit {index + 1}
                         </div>
-                        <div className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">
+                        <div className="rounded-full bg-brand-subtle px-2 py-0.5 text-[10px] text-brand">
                           {aspectRatio}
                         </div>
                       </div>
@@ -525,7 +529,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                       <div className="mt-3 grid grid-cols-3 gap-2">
                         {imageUrls.map((url: string, imageIndex: number) => (
                           <div key={`${url}-${imageIndex}`}>
-                            <div className="mb-1 text-[10px] text-gray-500 dark:text-gray-400">
+                            <div className="mb-1 text-[10px] text-muted-foreground">
                               {imageIndex === 0
                                 ? "Main image"
                                 : `Reference ${imageIndex}`}
@@ -537,7 +541,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                                   ? `Main image for edit ${index + 1}`
                                   : `Reference ${imageIndex} for edit ${index + 1}`
                               }
-                              className="aspect-square w-full rounded object-cover bg-gray-50 dark:bg-gray-800"
+                              className="aspect-square w-full rounded object-cover bg-muted"
                               loading="lazy"
                             />
                           </div>
@@ -549,7 +553,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
               </div>
             )}
           {event.status !== "running" && images && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="divide-y divide-border">
               {images.map((item, index) => {
                 const imageUrls = Array.isArray(item?.image_urls)
                   ? item.image_urls
@@ -561,18 +565,18 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                 return (
                   <div key={`${prompt || "edit"}-${index}`} className="space-y-3 py-3">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-medium text-gray-700 dark:text-gray-200">
+                      <div className="text-xs font-medium text-foreground">
                         Edit {index + 1}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800 dark:text-gray-300">
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
                           {item?.aspect_ratio || "match input"}
                         </span>
                         <span
                           className={`rounded-full px-2 py-0.5 text-[10px] ${
                             succeeded
-                              ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300"
-                              : "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300"
+                              ? "bg-success-subtle text-success"
+                              : "bg-danger-subtle text-danger"
                           }`}
                         >
                           {succeeded ? "Complete" : "Failed"}
@@ -582,35 +586,35 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                     {prompt && <ExpandablePrompt prompt={prompt} />}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                        <div className="mb-1 text-xs text-muted-foreground">
                           Before
                         </div>
                         {imageUrls[0] ? (
                           <img
                             src={imageUrls[0]}
                             alt={`Main image for edit ${index + 1}`}
-                            className="aspect-square w-full rounded object-contain bg-gray-50 dark:bg-gray-800"
+                            className="aspect-square w-full rounded object-contain bg-muted"
                             loading="lazy"
                           />
                         ) : (
-                          <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                          <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                             Missing
                           </div>
                         )}
                       </div>
                       <div>
-                        <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                        <div className="mb-1 text-xs text-muted-foreground">
                           After
                         </div>
                         {succeeded ? (
                           <img
                             src={item.result_url}
                             alt={`Edited image ${index + 1}`}
-                            className="aspect-square w-full rounded object-contain bg-gray-50 dark:bg-gray-800"
+                            className="aspect-square w-full rounded object-contain bg-muted"
                             loading="lazy"
                           />
                         ) : (
-                          <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                          <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                             Failed
                           </div>
                         )}
@@ -618,7 +622,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                     </div>
                     {imageUrls.length > 1 && (
                       <div>
-                        <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+                        <div className="mb-1 text-xs text-muted-foreground">
                           Reference images
                         </div>
                         <div className="grid grid-cols-3 gap-2">
@@ -629,7 +633,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                                 key={`${url}-${referenceIndex}`}
                                 src={url}
                                 alt={`Reference ${referenceIndex + 1} for edit ${index + 1}`}
-                                className="aspect-square w-full rounded object-cover bg-gray-50 dark:bg-gray-800"
+                                className="aspect-square w-full rounded object-cover bg-muted"
                                 loading="lazy"
                               />
                             ))}
@@ -637,16 +641,16 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                       </div>
                     )}
                     {item?.error && (
-                      <div className="rounded bg-red-50 p-2 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-200">
+                      <div className="rounded bg-danger-subtle p-2 text-xs text-danger">
                         {item.error}
                       </div>
                     )}
                     {succeeded && (
                       <div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                        <div className="text-xs text-muted-foreground">
                           Result URL
                         </div>
-                        <div className="mt-1 break-all rounded bg-gray-50 p-2 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                        <div className="mt-1 break-all rounded bg-muted p-2 font-mono text-xs text-muted-foreground">
                           {item.result_url}
                         </div>
                       </div>
@@ -662,13 +666,13 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
       {event.toolName === "save_assets" && !hasError && (
         <div className="space-y-3">
           {event.status === "running" && input?.asset_ids && Array.isArray(input.asset_ids) && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
+            <div className="divide-y divide-border">
               {input.asset_ids.map((assetId: string, index: number) => (
                 <div key={`${assetId}-${index}`} className="py-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  <div className="text-xs text-muted-foreground mb-1">
                     Asset ID
                   </div>
-                  <div className="break-all rounded bg-gray-50 p-2 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                  <div className="break-all rounded bg-muted p-2 font-mono text-xs text-muted-foreground">
                     {assetId}
                   </div>
                 </div>
@@ -676,11 +680,11 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
             </div>
           )}
           {event.status !== "running" && output?.images && Array.isArray(output.images) && (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800">
-              {output.images.map((item: any, index: number) => (
+            <div className="divide-y divide-border">
+              {output.images.map((item: ToolImage, index: number) => (
                 <div key={`${item.asset_id}-${index}`} className="flex gap-3 py-2">
                   <div className="w-1/2">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    <div className="text-xs text-muted-foreground mb-1">
                       Saved asset
                     </div>
                     {item.public_url ? (
@@ -691,16 +695,16 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                         loading="lazy"
                       />
                     ) : (
-                      <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                      <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                         Failed
                       </div>
                     )}
                   </div>
                   <div className="w-1/2 self-center">
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                    <div className="text-xs text-muted-foreground">
                       Permanent URL
                     </div>
-                    <div className="mt-1 break-all rounded bg-gray-50 p-2 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                    <div className="mt-1 break-all rounded bg-muted p-2 font-mono text-xs text-muted-foreground">
                       {item.public_url}
                     </div>
                   </div>
@@ -718,13 +722,13 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
               event.status === "running" &&
               input?.asset_descriptions &&
               Array.isArray(input.asset_descriptions) && (
-                <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                <div className="divide-y divide-border">
                   {input.asset_descriptions.map((description: string, index: number) => (
                     <div key={`${description}-${index}`} className="py-2">
-                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                      <div className="text-xs text-muted-foreground mb-1">
                         Asset {index + 1}
                       </div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300">
+                      <div className="text-xs text-muted-foreground">
                         {description}
                       </div>
                     </div>
@@ -732,7 +736,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                 </div>
               )}
             {event.status !== "running" && visibleExtractedAssets && (
-              <div className="divide-y divide-gray-100 dark:divide-gray-800">
+              <div className="divide-y divide-border">
                 {visibleExtractedAssets.map((asset, index) => {
                   const assetRecord =
                     asset && typeof asset === "object"
@@ -763,62 +767,62 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                   return (
                     <div key={`${description}-${index}`} className="flex gap-3 py-2">
                       <div className="w-1/2 shrink-0">
-                        <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        <div className="text-xs text-muted-foreground mb-1">
                           Extracted crop
                         </div>
                         {previewUrl ? (
                           <img
                             src={previewUrl}
                             alt={description}
-                            className="max-h-48 w-full rounded object-contain bg-gray-50 dark:bg-gray-800"
+                            className="max-h-48 w-full rounded object-contain bg-muted"
                             loading="lazy"
                           />
                         ) : (
-                          <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                          <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                             Missing
                           </div>
                         )}
                       </div>
                       <div className="w-1/2 self-center space-y-2">
                         <div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                          <div className="text-xs text-muted-foreground">
                             Requested asset
                           </div>
-                          <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                          <div className="mt-1 text-xs text-muted-foreground">
                             {description}
                           </div>
                         </div>
                         {publicUrl && (
                           <div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400">
+                            <div className="text-xs text-muted-foreground">
                               Public URL
                             </div>
-                            <div className="mt-1 break-all rounded bg-gray-50 p-2 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                            <div className="mt-1 break-all rounded bg-muted p-2 font-mono text-xs text-muted-foreground">
                               {publicUrl}
                             </div>
                           </div>
                         )}
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <div>
-                            <div className="text-gray-500 dark:text-gray-400">Status</div>
-                            <div className="mt-1 font-mono text-gray-600 dark:text-gray-300">
+                            <div className="text-muted-foreground">Status</div>
+                            <div className="mt-1 font-mono text-muted-foreground">
                               {statusLabel}
                             </div>
                           </div>
                           <div>
-                            <div className="text-gray-500 dark:text-gray-400">
+                            <div className="text-muted-foreground">
                               Source image
                             </div>
-                            <div className="mt-1 font-mono text-gray-600 dark:text-gray-300">
+                            <div className="mt-1 font-mono text-muted-foreground">
                               {String(assetRecord.image_index ?? "-")}
                             </div>
                           </div>
                         </div>
                         <div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                          <div className="text-xs text-muted-foreground">
                             Bounding box
                           </div>
-                          <div className="mt-1 break-all rounded bg-gray-50 p-2 font-mono text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                          <div className="mt-1 break-all rounded bg-muted p-2 font-mono text-xs text-muted-foreground">
                             [{boxText}]
                           </div>
                         </div>
@@ -834,7 +838,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
       {event.toolName === "screenshot_preview" && !hasError && (
         <div>
           {event.status === "running" && (
-            <div className="text-xs text-gray-600 dark:text-gray-400 py-1.5">
+            <div className="text-xs text-muted-foreground py-1.5">
               Rendering desktop and mobile previews...
             </div>
           )}
@@ -852,11 +856,11 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                     : null;
                 return (
                   <div key={viewport}>
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 capitalize">
+                    <div className="text-xs text-muted-foreground mb-1 capitalize">
                       {viewport}
                     </div>
                     {imageUrl ? (
-                      <div className="max-h-96 overflow-y-auto rounded border border-gray-200 dark:border-gray-700">
+                      <div className="max-h-96 overflow-y-auto rounded border border-border">
                         <img
                           src={imageUrl}
                           alt={`Screenshot of the generated ${viewport} preview`}
@@ -865,7 +869,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
                         />
                       </div>
                     ) : (
-                      <div className="aspect-square rounded bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-xs text-gray-400">
+                      <div className="aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
                         Missing
                       </div>
                     )}
@@ -881,7 +885,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
         <>
           {event.input && (
             <div>
-              <div className="text-xs uppercase tracking-wide text-gray-400">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
                 Input
               </div>
               {renderJson(event.input)}
@@ -889,7 +893,7 @@ function renderToolDetails(event: AgentEvent, variantCode?: string) {
           )}
           {event.output && (
             <div className="mt-3">
-              <div className="text-xs uppercase tracking-wide text-gray-400">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
                 Output
               </div>
               {renderJson(event.output)}
@@ -924,14 +928,14 @@ function AgentEventCard({
   if (event.type === "assistant") {
     if (!event.content) return null;
     return (
-      <div className="py-1 text-sm text-gray-700 dark:text-gray-300 prose prose-sm dark:prose-invert max-w-none">
+      <div className="py-1 text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
         <ReactMarkdown
           components={{
             img: ({ ...props }) => (
               <div className="my-2 flex justify-start max-w-full">
                 <img
                   {...props}
-                  className="max-h-60 max-w-full object-contain rounded-lg border border-gray-200 dark:border-gray-700"
+                  className="max-h-60 max-w-full object-contain rounded-lg border border-border"
                   loading="lazy"
                 />
               </div>
@@ -948,7 +952,7 @@ function AgentEventCard({
     <div>
       <button
         onClick={() => setExpanded((prev) => !prev)}
-        className="w-full flex items-center gap-2 py-1.5 text-left text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+        className="w-full flex items-center gap-2 py-1.5 text-left text-muted-foreground hover:text-foreground"
       >
         {getEventIcon(event.type, event.toolName)}
         <span className={`text-sm flex-1 ${event.status === "running" ? "active-step-shimmer" : ""}`}>
@@ -970,7 +974,7 @@ function AgentEventCard({
                     <div className="my-2 flex justify-start max-w-full">
                       <img
                         {...props}
-                        className="max-h-60 max-w-full object-contain rounded-lg border border-gray-200 dark:border-gray-700"
+                        className="max-h-60 max-w-full object-contain rounded-lg border border-border"
                         loading="lazy"
                       />
                     </div>
@@ -1063,14 +1067,14 @@ function AgentActivity() {
                       [groupUiKey]: !previous[groupUiKey],
                     }))
                   }
-                  className="w-full flex items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/60 px-3 py-2 text-left"
+                  className="w-full flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-left"
                 >
                   {isExpanded ? (
-                    <BsChevronDown className="text-gray-400 text-xs" />
+                    <BsChevronDown className="text-muted-foreground text-xs" />
                   ) : (
-                    <BsChevronRight className="text-gray-400 text-xs" />
+                    <BsChevronRight className="text-muted-foreground text-xs" />
                   )}
-                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                  <span className="text-xs text-muted-foreground">
                     Worked through {group.events.length} step
                     {group.events.length !== 1 ? "s" : ""}
                     {groupDuration ? ` in ${groupDuration}` : ""}
@@ -1097,12 +1101,12 @@ function AgentActivity() {
         </>
       ) : (
         <>
-          <div className="flex items-center justify-between rounded-xl border border-violet-200 dark:border-violet-800 bg-gradient-to-r from-violet-50 to-white dark:from-violet-900/20 dark:to-zinc-900 px-3 py-2 shadow-[0_0_15px_-3px_rgba(139,92,246,0.3)] dark:shadow-[0_0_15px_-3px_rgba(139,92,246,0.4)] transition-all duration-500">
-            <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+          <div className="working-indicator-bg flex items-center justify-between rounded-xl border border-border px-3 py-2">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <WorkingPulse />
               <span>Working...</span>
             </div>
-            <div className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+            <div className="text-xs font-semibold text-foreground">
               Time so far {runningDuration || "--"}
             </div>
           </div>

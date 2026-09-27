@@ -294,12 +294,12 @@ function PreviewComponent({
 
   return (
     <div
-      className={`flex-1 min-h-0 relative ${
+      className={`relative min-h-0 flex-1 ${
         device === "mobile"
-          ? "flex justify-center overflow-hidden bg-gray-100 dark:bg-zinc-900"
+          ? "flex justify-center overflow-hidden bg-canvas"
           : activeMode === "fit"
-            ? "flex justify-center overflow-hidden"
-            : "overflow-auto"
+            ? "flex justify-center overflow-hidden bg-canvas"
+            : "overflow-auto bg-canvas"
       }`}
     >
       <div

@@ -271,7 +271,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           ...state.commits,
           [hash]: {
             ...commit,
-            selectedVariantIndex: index,
+            selectedVariantIndex: Math.max(
+              0,
+              Math.min(index, commit.variants.length - 1)
+            ),
           },
         },
       };
@@ -337,7 +340,10 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           [hash]: {
             ...commit,
             variants: newVariants,
-            selectedVariantIndex: Math.min(commit.selectedVariantIndex, count - 1),
+            selectedVariantIndex: Math.max(
+              0,
+              Math.min(commit.selectedVariantIndex, count - 1)
+            ),
           },
         },
       };

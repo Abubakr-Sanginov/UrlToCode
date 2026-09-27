@@ -12,10 +12,11 @@ import WorkingPulse from "../core/WorkingPulse";
 const IFRAME_WIDTH = 1280;
 const IFRAME_HEIGHT = 550;
 
-// Color-coded badge shown in the corner of each variant thumbnail.
+// Badge shown in the corner of each variant thumbnail. Neutral by default so
+// it labels the option without competing with the preview.
 const BADGE_TONE: Record<VariantLabelTone, string> = {
-  fast: "bg-sky-500/90 text-white",
-  max: "bg-amber-500/90 text-white",
+  fast: "bg-card/90 text-muted-foreground",
+  max: "bg-brand/90 text-brand-foreground",
 };
 
 interface VariantThumbnailProps {
@@ -58,7 +59,7 @@ function VariantThumbnail({ code, isSelected }: VariantThumbnailProps) {
   return (
     <div
       ref={containerRef}
-      className="w-full overflow-hidden rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900"
+      className="w-full overflow-hidden rounded border border-border bg-background"
       style={{ height: `${scaledHeight}px` }}
     >
       <iframe
@@ -112,6 +113,10 @@ function Variants() {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
+    // handleVariantClick and commit are read through the listener at the
+    // moment a key is pressed; adding them would re-register the listener on
+    // every render for no behavioural gain.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variants.length, commit?.isCommitted, selectedVariantIndex, head]);
 
   if (head === null || !commit) {
@@ -123,12 +128,13 @@ function Variants() {
   }
 
   return (
-    <div className="pt-2 pb-1">
+    <div className="pb-1 pt-2">
       <div className="grid grid-cols-2 gap-2">
         {variants.map((variant, index) => {
-          let statusColor = "bg-gray-300 dark:bg-gray-600";
-          if (variant.status === "complete") statusColor = "bg-green-500";
-          else if (variant.status === "error" || variant.status === "cancelled") statusColor = "bg-red-500";
+          let statusColor = "bg-border";
+          if (variant.status === "complete") statusColor = "bg-success";
+          else if (variant.status === "error" || variant.status === "cancelled")
+            statusColor = "bg-danger";
 
           const label = getVariantLabel(variant.model, {
             inputMode,
@@ -136,20 +142,27 @@ function Variants() {
           });
 
           return (
-            <div
+            <button
               key={index}
-              className={`relative w-full rounded cursor-pointer overflow-hidden ${
+              type="button"
+              aria-pressed={index === selectedVariantIndex}
+              className={`relative w-full overflow-hidden rounded-lg text-left transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 index === selectedVariantIndex
-                  ? "ring-2 ring-blue-400 dark:ring-blue-500"
-                  : "ring-1 ring-gray-200 dark:ring-gray-700 hover:ring-gray-300 dark:hover:ring-gray-600"
+                  ? "ring-2 ring-brand"
+                  : "ring-1 ring-border hover:ring-input"
               }`}
-              title={variant.model ? (CODE_GENERATION_MODEL_DESCRIPTIONS[variant.model as CodeGenerationModel]?.name || variant.model) : undefined}
+              title={
+                variant.model
+                  ? CODE_GENERATION_MODEL_DESCRIPTIONS[
+                      variant.model as CodeGenerationModel
+                    ]?.name || variant.model
+                  : undefined
+              }
               onClick={() => handleVariantClick(index)}
             >
-              {/* Color-coded model badge in the thumbnail corner */}
               {label && (
                 <span
-                  className={`absolute top-1.5 right-1.5 z-10 rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none shadow-sm ${BADGE_TONE[label.tone]}`}
+                  className={`absolute right-1.5 top-1.5 z-10 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${BADGE_TONE[label.tone]}`}
                 >
                   {label.text}
                 </span>
@@ -158,19 +171,22 @@ function Variants() {
                 code={variant.code}
                 isSelected={index === selectedVariantIndex}
               />
-              <div className="flex items-center px-2 py-1 bg-white dark:bg-zinc-900">
-                <span className="inline-flex min-w-0 items-center text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                  <span className={`w-2 h-2 rounded-full mr-1.5 ${statusColor}`} />
+              <div className="flex items-center bg-card px-2 py-1">
+                <span className="inline-flex min-w-0 items-center whitespace-nowrap text-xs text-muted-foreground">
+                  <span
+                    className={`mr-1.5 h-1.5 w-1.5 rounded-full ${statusColor}`}
+                    aria-hidden="true"
+                  />
                   Option {index + 1}
                   {index < 9 && (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 font-mono ml-1">
-                      (⌥{index + 1})
+                    <span className="ml-1 font-mono text-[11px] text-muted-foreground/70">
+                      ⌥{index + 1}
                     </span>
                   )}
                 </span>
                 {variant.status === "generating" && (
                   <div
-                    className="ml-auto shrink-0 inline-flex items-center"
+                    className="ml-auto inline-flex shrink-0 items-center"
                     role="status"
                     aria-live="polite"
                     aria-label="Working"
@@ -179,7 +195,7 @@ function Variants() {
                   </div>
                 )}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

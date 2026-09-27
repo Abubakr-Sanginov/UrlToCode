@@ -31,6 +31,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/evals/compare" element={<EvalComparePage />} />
       </Routes>
     </Router>
-    <Toaster toastOptions={{ className: "dark:bg-zinc-950 dark:text-white" }} />
+    <Toaster
+      toastOptions={{
+        className:
+          "!bg-card !text-foreground !border !border-border !shadow-raised",
+      }}
+    />
   </React.StrictMode>
 );

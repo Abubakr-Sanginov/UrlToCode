@@ -1,7 +1,7 @@
 import copy
 import json
 import textwrap
-from typing import List
+from typing import Any, List
 from openai.types.chat import ChatCompletionMessageParam
 
 
@@ -169,9 +169,15 @@ def print_prompt_preview(prompt_messages: List[ChatCompletionMessageParam]) -> N
     print()
 
 
-def truncate_data_strings(data: List[ChatCompletionMessageParam]):  # type: ignore
+def truncate_data_strings(data: Any):  # type: ignore
     # Deep clone the data to avoid modifying the original object
     cloned_data = copy.deepcopy(data)
+
+    if isinstance(cloned_data, str):
+        # Truncate the string itself if it's long
+        if len(cloned_data) > 40:
+            cloned_data = cloned_data[:40] + "..." + f" ({len(cloned_data)} chars)"
+        return cloned_data
 
     if isinstance(cloned_data, dict):
         for key, value in cloned_data.items():  # type: ignore

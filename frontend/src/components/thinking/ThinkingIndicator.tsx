@@ -68,64 +68,42 @@ function ThinkingIndicator() {
 
   return (
     <div
-      className={`rounded-md mb-2 ${
+      className={`mb-2 rounded-lg border ${
         isActive
-          ? "border-2 border-green-400 dark:border-green-500"
-          : "bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700"
+          ? "working-indicator-bg border-brand-border"
+          : "border-border bg-muted"
       }`}
-      style={
-        isActive
-          ? {
-              animation: "flash 1s ease-in-out infinite",
-            }
-          : undefined
-      }
     >
-      <style>
-        {`
-          @keyframes flash {
-            0%, 100% {
-              background-color: rgb(240 253 244);
-              border-color: rgb(74 222 128);
-            }
-            50% {
-              background-color: rgb(187 247 208);
-              border-color: rgb(34 197 94);
-            }
-          }
-          @media (prefers-color-scheme: dark) {
-            @keyframes flash {
-              0%, 100% {
-                background-color: rgb(20 83 45 / 0.3);
-                border-color: rgb(34 197 94);
-              }
-              50% {
-                background-color: rgb(20 83 45 / 0.6);
-                border-color: rgb(74 222 128);
-              }
-            }
-          }
-        `}
-      </style>
       <button
+        type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800/50 transition-colors rounded-t-md"
+        aria-expanded={isExpanded}
+        className="flex w-full items-center justify-between rounded-t-lg px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <div className="flex items-center gap-2">
           {isExpanded ? (
-            <BsChevronDown className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+            <BsChevronDown
+              className="h-3 w-3 text-muted-foreground"
+              aria-hidden="true"
+            />
           ) : (
-            <BsChevronRight className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+            <BsChevronRight
+              className="h-3 w-3 text-muted-foreground"
+              aria-hidden="true"
+            />
           )}
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          <span className="text-sm font-medium text-foreground">
             {headerText}
           </span>
         </div>
         <div className="flex items-center gap-2">
           {(isWaiting || isThinkingInProgress) && (
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-xs text-green-600 dark:text-green-400">
+            <span className="flex items-center gap-1.5">
+              <span
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand"
+                aria-hidden="true"
+              />
+              <span className="text-xs text-muted-foreground">
                 {isWaiting ? "starting" : "reasoning"}
               </span>
             </span>
@@ -136,8 +114,8 @@ function ThinkingIndicator() {
       {thinking && (
         <>
           {isExpanded ? (
-            <div className="px-3 pb-3 max-h-60 overflow-y-auto">
-              <div className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+            <div className="max-h-60 overflow-y-auto px-3 pb-3">
+              <div className="prose prose-sm max-w-none text-sm leading-relaxed text-foreground dark:prose-invert">
                 <ReactMarkdown>{thinking}</ReactMarkdown>
               </div>
             </div>
@@ -145,7 +123,7 @@ function ThinkingIndicator() {
             // Only show preview when thinking is in progress, not when complete
             isThinkingInProgress && (
               <div className="px-3 pb-2">
-                <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
+                <p className="truncate text-sm text-muted-foreground">
                   {previewText}
                 </p>
               </div>

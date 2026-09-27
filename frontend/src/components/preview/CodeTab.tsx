@@ -55,25 +55,28 @@ function CodeTab({ code, setCode, settings }: Props) {
 
   return (
     <div className="relative">
-      <div className="flex justify-start items-center px-4 mb-2">
-        <span
-          title="Copy Code"
-          className="bg-black text-white flex items-center justify-center hover:text-black hover:bg-gray-100 cursor-pointer rounded-lg text-sm p-2.5"
+      <div className="mb-2 flex items-center justify-start gap-2 px-4">
+        <Button
           onClick={copyCode}
+          variant="outline"
+          size="sm"
+          title="Copy code"
           data-testid="copy-code"
         >
-          Copy Code <FaCopy className="ml-2" />
-        </span>
+          Copy code
+          <FaCopy className="ml-2" aria-hidden="true" />
+        </Button>
         <Button
           onClick={doOpenInCodepenio}
-          className="bg-gray-100 text-black ml-2 py-2 px-4 border border-black rounded-md hover:bg-gray-400 focus:outline-none"
+          variant="outline"
+          size="sm"
           data-testid="open-codepen"
         >
           Open in{" "}
           <img
             src="https://assets.codepen.io/t-1/codepen-logo.svg"
             alt="codepen.io"
-            className="h-4 ml-1"
+            className="ml-1 h-4"
           />
         </Button>
       </div>
