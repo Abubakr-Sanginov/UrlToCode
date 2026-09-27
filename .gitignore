@@ -72,7 +72,12 @@ crawl_partial_*.json
 
 # Local AI tooling artifacts
 .agents/
+.claude/
 .playwright-mcp/
 .workbuddy-ai/
 opencode.json
 skills-lock.json
+CLAUDE.md
+.cursor/
+.windsurf/
+.continue/
