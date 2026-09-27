@@ -1,0 +1,71 @@
+.aider*
+node_modules
+
+# Project-related files
+
+# Run logs
+run_logs/
+backend/local_assets/*
+backend/image_generation/eval_sets/*
+backend/image_generation/eval_results/*
+
+# Weird Docker setup related files
+backend/backend/*
+
+# Env vars
+frontend/.env.local
+.env
+
+# Mac files
+.DS_Store
+
+#Rodney
+.rodney
+
+# Walkthrough demo videos
+walkthrough/
+
+# Auto-generated entries
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Sensitive files (auto-detected)
+node_modules
+
+
+# Crawler/clone output written by clone_site.py and manual runs
+cloned-site*/
+crawl_partial_*.json
+
+# Screenshots captured while comparing clones
+*.png
+!frontend/public/**/*.png
+!design-docs/**/*.png
