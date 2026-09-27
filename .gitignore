@@ -75,9 +75,12 @@ crawl_partial_*.json
 .claude/
 .playwright-mcp/
 .workbuddy-ai/
+.kilo/
+.zed/
 opencode.json
 skills-lock.json
 CLAUDE.md
 .cursor/
 .windsurf/
 .continue/
+.pytest_cache/
