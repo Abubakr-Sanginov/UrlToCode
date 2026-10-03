@@ -15,13 +15,14 @@ import hashlib
 import hmac
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, HTTPException, Response
 from pydantic import BaseModel, Field
 
 import accounts
 import clone_runs
+import config
 import telegram_auth
 
 router = APIRouter(prefix="/api", tags=["accounts"])
@@ -99,6 +100,21 @@ def _usage_payload(usage: accounts.Usage) -> Dict[str, Any]:
     }
 
 
+def _cross_site() -> bool:
+    """Whether this app is served from somewhere other than the backend.
+
+    Read off the origins the backend already allows, rather than a setting
+    of its own: two sources of truth for one fact is how a deployment ends
+    up with a frontend that is allowed in and a cookie the browser
+    withholds from it.
+
+    An https origin means the frontend is somewhere else - on Vercel while
+    the bot is on Railway. Over plain http, which is only ever a laptop, the
+    two are the same server and there is nothing to solve.
+    """
+    return any(origin.startswith("https://") for origin in config.CORS_ALLOWED_ORIGINS)
+
+
 def _issue(response: Response, account: accounts.Account) -> str:
     """Set the session cookie and hand the token back to the page.
 
@@ -106,14 +122,22 @@ def _issue(response: Response, account: accounts.Account) -> str:
     a cookie on a websocket handshake to another origin, and the run itself
     is a websocket. The cookie is HttpOnly and stays that way - it is not
     loosened so the page can read it.
+
+    With the site on one domain and the bot on another, SameSite=lax means
+    the browser withholds the cookie from every request and everyone is
+    silently signed out. "none" is the only value that survives that, and
+    browsers refuse it without "secure" - which in turn refuses plain http,
+    and so would break development entirely if it were not conditional.
     """
     token = _sign(account.id, time.time())
+    split = _cross_site()
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
-        samesite="lax",
+        samesite="none" if split else "lax",
+        secure=split,
         path="/",
     )
     return token

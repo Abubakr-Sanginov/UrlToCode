@@ -30,4 +30,7 @@ COPY ./ /app/
 # Start under a virtual display; set CRAWLER_HEADLESS=1 to opt out of the
 # headed crawler instead.
 ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1366x768x24"]
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7001"]
+# Shell form so ${PORT} expands. Hosts such as Railway pick the port per
+# deployment and health-check that one; a hard-coded 7001 answers a health
+# check nobody is listening to.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-7001}

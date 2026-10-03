@@ -1,215 +1,122 @@
-# Running it 24/7
+# Two addresses: the site on Vercel, the bot on Railway
 
-There is no bot process to run. That is the first thing to understand.
+The site is a static bundle. The bot is a server with a database, a
+browser, and a public address Telegram has to be able to reach. They are
+split across two hosts, and that split has exactly one consequence worth
+understanding before anything is deployed.
 
-The bot has exactly two jobs: answer `/start` with a button, and say "your
-clone is ready". Both are HTTP calls. So both live in the backend as routes:
+## The thing that breaks
 
-| | |
+The session is a cookie. A cookie marked `SameSite=lax` — which is what
+this app used to send — is **withheld by the browser from every
+cross-site request**. Put the site on `urltocode.vercel.app` and the
+backend on `urltocode.up.railway.app` and the browser stops sending the
+cookie to every `/api` call. Nobody is signed in, and nothing appears in
+any log, because the request arrives perfectly well formed — anonymous.
+
+The fix is `SameSite=None; Secure`, and it is applied
+[here](../backend/routes/accounts.py) by looking at one thing: whether the
+backend is configured to allow any `https://` origin.
+
+```python
+def _cross_site() -> bool:
+    return any(origin.startswith("https://") for origin in config.CORS_ALLOWED_ORIGINS)
+```
+
+Local development allows only `http://localhost:5173`, so the cookie stays
+`lax` and unsecured and login works on a laptop. A deployment whose allowed
+origins include Vercel's `https://` address gets `None; Secure` and works
+across the split. One setting decides both the CORS policy and the cookie,
+because two settings for one fact is how a deployment ends up allowing a
+frontend in and then withholding its cookie from it.
+
+> `Secure` means the cookie will not be sent over plain http. That is not a
+> caveat, it is the mechanism: both addresses must be https, and both are.
+
+## Vercel — the site
+
+Connect the repository, then set the **Root Directory** to `frontend`.
+[vercel.json](../frontend/vercel.json) supplies the build command, the
+output directory, and the SPA rewrite that `BrowserRouter` needs.
+
+Set these as environment variables in Vercel:
+
+```
+VITE_HTTP_BACKEND_URL = https://<railway-domain>
+VITE_WS_BACKEND_URL   = wss://<railway-domain>
+```
+
+They are read at build time by [config.ts](../frontend/src/config.ts), so
+changing them means a **rebuild**, not just a restart. `http` and `ws` in
+the old values will be mixed-content-blocked by the browser on an https
+page — the request fails silently in the console.
+
+## Railway — the bot and the API
+
+One service, root directory `backend`. The Dockerfile is picked up as it
+stands; it listens on `${PORT}` because Railway chooses a port per
+deployment and health-checks that one.
+
+Set as service variables:
+
+| Variable | Value |
 |---|---|
-| `POST /api/telegram/webhook` | Telegram tells us what someone typed |
-| `GET /s/{token}` | the shared site |
-| the Mini App | this same app, served over HTTPS |
+| `DATABASE_URL` | the Neon connection string |
+| `SESSION_SECRET` | a long random string, generated **for this deployment** |
+| `CORS_ALLOWED_ORIGINS` | `https://<your-vercel-domain>` — this one is not optional, it is what makes the cookie cross-site |
+| `TELEGRAM_BOT_TOKEN` | from @BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | anything you invent; Telegram sends it back and it is checked |
+| `TELEGRAM_MINI_APP_URL` | `https://<your-vercel-domain>` — the address the button opens |
+| `OPENAI_API_KEY` or equivalents | one model provider is enough |
 
-A separate long-polling bot script would be a second thing to install, keep
-alive and forget to restart. A webhook is the HTTP address of the app you are
-already running.
-
----
-
-## The one thing that cannot be worked around
-
-**Telegram cannot reach `localhost`.** Neither `setWebhook` nor a Mini App
-button will open an address without a public HTTPS one, with a certificate a
-browser trusts.
-
-So something on the internet has to be listening. That is the whole question,
-and it comes down to where the app runs.
-
----
-
-## Where to run it
-
-### Recommended: a VPS, Caddy, one domain
-
-Roughly 300–600 ₽/month. Paid with a Russian card, which matters given no
-passport.
-
-reg.ru, Timeweb or Selectel. Pick any with **Ubuntu 22.04 or 24.04**. Then:
+Then point the webhook at Railway, from a machine that can reach
+Telegram:
 
 ```bash
-# 1. A domain pointed at the server's IP. Any registrar; reg.ru is easiest.
-#    A record: app.example.ru -> the server's IPv4
-
-# 2. On the server
-sudo apt update
-sudo apt install -y docker.io docker-compose-v2 git
-git clone <your repo> /opt/urltocode
-cd /opt/urltocode
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -d url="https://<railway-domain>/api/telegram/webhook" \
+  -d secret_token="$TELEGRAM_WEBHOOK_SECRET"
 ```
 
-**Caddy** rather than nginx, because it gets and renews the certificate on
-its own. Three lines where nginx plus certbot is thirty:
-
-```caddyfile
-# /etc/caddy/Caddyfile
-app.example.ru {
-    handle /api/* {
-        reverse_proxy 127.0.0.1:7001
-    }
-    handle /s/* {
-        reverse_proxy 127.0.0.1:7001
-    }
-    handle {
-        reverse_proxy 127.0.0.1:5173
-    }
-}
-```
+Check it answered:
 
 ```bash
-sudo systemctl enable --now caddy
+curl "https://<railway-domain>/api/telegram/status"
 ```
 
-Caddy asks Let's Encrypt for a certificate on first start. It works if DNS
-already points at the server — check that first, because the failure is a
-timeout and gives no useful reason.
+### A volume, or the clones disappear
 
-**Run it under systemd** so it comes back after a reboot, which is the whole
-difference between a server and a machine you remember to switch on:
+Cloning writes into `backend/clone_runs/`. On a PaaS host that directory is
+part of the container, and the next deployment replaces it — everybody's
+saved projects are gone, and the sharing links 410 with them. Attach a
+volume mounted at `/app/clone_runs`.
 
-```ini
-# /etc/systemd/system/urltocode.service
-[Unit]
-Description=UrlToCode
-After=docker.service
-Requires=docker.service
+## After the split, check these four things
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/urltocode
-ExecStart=docker compose up -d
-ExecStop=docker compose down
-TimeoutStartSec=0
+In this order, because the first failure hides the rest:
 
-[Install]
-WantedBy=multi-user.target
-```
+1. **Open the site while signed in and watch the Network tab.** `/api/me`
+   must be 200. If it is 200 with a null account, `CORS_ALLOWED_ORIGINS`
+   is wrong — that is the exact signature of this bug.
+2. **Start a clone.** It runs over a websocket; a wrong `VITE_WS_BACKEND_URL`
+   shows as "Is the backend running?" while the backend is running.
+3. **Open the bot and press the button.** If nothing opens, `setWebhook` did
+   not take, or `TELEGRAM_MINI_APP_URL` is still the default.
+4. **Buy a plan and watch the webhook log.** A payment that never arrives
+   here is one Telegram could not deliver, not one the app rejected.
 
-```bash
-sudo systemctl enable --now urltocode
-```
+## Turning up
 
-### Without a server: Cloudflare Tunnel
+Railway charges for what it uses, and the backend is not small: Chromium
+plus its libraries plus a virtual display is roughly a gigabyte of image,
+and the crawler runs a browser per clone. Cheaper than a VPS, and easier —
+but if the bill becomes the argument, a small VPS with the same Dockerfile
+does the same work and costs a fixed few hundred roubles a month.
 
-Free, no public IP, no certificate to manage — Caddy's job done by someone
-else. A `cloudflared` process holds the tunnel open from **any** machine that
-is on 24/7.
+## The one command that would undo all of this
 
-The catch, and it is a real one: something still has to stay awake. On a
-laptop that means the tunnel dies every time the lid closes. It trades money
-for uptime, and for a bot that is usually the wrong way round.
-
----
-
-## Before the bot will do anything
-
-Four things, all in `backend/.env`:
-
-```
-TELEGRAM_BOT_TOKEN=123456789:AAF...     from @BotFather
-TELEGRAM_WEBHOOK_SECRET=<long random>   any string you invent
-TELEGRAM_MINI_APP_URL=https://app.example.ru
-APP_URL=https://app.example.ru
-```
-
-**Restart the backend after editing `.env`.** These are read once at startup;
-a reload does not pick them up.
-
-Then point Telegram at it, once:
-
-```bash
-curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://app.example.ru/api/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
-```
-
-The answer must contain `"ok": true`. Check it is still connected:
-
-```bash
-curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-```
-
-`pending_update_count` should settle back to zero.
-
-### Check it without a phone
-
-```bash
-# Is a token set, is it the right shape, where would the button open
-curl https://app.example.ru/api/telegram/status
-
-# Should be 403: a webhook address is public, and this proves the secret works
-curl -X POST https://app.example.ru/api/telegram/webhook -d '{}'
-```
-
-`configured: false` means the token is missing or half-copied. That endpoint
-never prints the token.
-
----
-
-## Two things to set before a launch
-
-### `SESSION_SECRET`
-
-Unset, this falls back to a hardcoded constant that is in the repository.
-Anyone who has read the repository can then forge a session cookie for any
-account, including a paid one.
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-### The database password
-
-The Neon connection string was pasted into a chat. Rotate it in the Neon
-console and put the new one in `.env`. Until then, treat that database as
-public.
-
----
-
-## What is stored where
-
-| | |
-|---|---|
-| accounts, projects, share links | Neon, via `DATABASE_URL` |
-| clone runs and project files | **disk**, `backend/clone_runs/` |
-
-The disk part matters: it is inside the container, so
-`docker compose down && docker compose up -d` with a rebuild can leave you
-with account rows pointing at files that are not there. A shared link then
-answers "this site is no longer stored" rather than opening.
-
-Two ways out, cheapest first:
-
-* **Mount a volume** at `backend/clone_runs` so the files outlive the
-  container. One line in `docker-compose.yml`, and it also survives upgrades.
-* **Object storage** (S3, or a Neon-adjacent bucket) and stop trusting the
-  local disk at all.
-
-Not urgent for a launch on a VPS with a persistent disk. Urgent the first
-time the disk fills, because every clone fails at once and the failure will
-look like an LLM problem.
-
----
-
-## What is built
-
-* **Sign in from the Mini App**, with no email and no password. Checked
-  against the bot token on the server.
-* **Buying a plan in Stars.** `POST /api/telegram/invoice` for a link,
-  `openInvoiceLink` for the payment, and the plan changes when the signed
-  webhook says so.
-* **Deep links.** `/start project_<run-id>` opens that project.
-* **"Your clone is ready"**, to people who pressed `/start` and nobody else.
-
-Still absent: nothing is stubbed. There is no `createInvoiceLink` left
-uncalled and no notification only the tests can reach — both were wired
-after being found disconnected.
+If both halves turn out to be more trouble than they are worth, serving the
+built frontend from FastAPI removes the split, the cookie policy, the CORS
+list, and the two places a URL can be wrong. It is a small change, and it
+is deliberately not the first thing to reach for — you asked for the site
+on Vercel, and that is where it should be.

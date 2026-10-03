@@ -1,22 +1,24 @@
 FROM node:22-bullseye-slim
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Copy package.json and yarn.lock
-COPY package.json yarn.lock /app/
+# pnpm, matching the lockfile in this repository. This used to copy a
+# yarn.lock that does not exist, so the image never built.
+RUN corepack enable
 
-# Set the environment variable to skip Puppeteer download
+# Skip the Chromium download: the crawler runs on the backend, and pulling
+# a browser through every frontend rebuild is a minute for nothing.
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-# Install dependencies
-RUN yarn install
+# Dependencies first, so a source-only change reuses the install layer.
+COPY package.json pnpm-lock.yaml /app/
+RUN pnpm install --frozen-lockfile
 
-# Copy the current directory contents into the container at /app
 COPY ./ /app/
 
-# Expose port 5173 to access the server
-EXPOSE 5173
+# A built site, not a dev server. `vite dev` serves unbundled modules and
+# is not meant to face the public.
+RUN pnpm build
 
-# Command to run the application
-CMD ["yarn", "dev", "--host", "0.0.0.0"]
+EXPOSE 5173
+CMD ["pnpm", "preview", "--host", "0.0.0.0", "--port", "5173"]
