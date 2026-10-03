@@ -1,5 +1,14 @@
 from llm import Llm
 
+# A project configured for OpenRouter edits with OpenRouter, whichever other
+# keys happen to sit in .env. Ordered so the two variants of an edit differ:
+# the same model twice would only show the user one answer twice, and the
+# high slot is the one measured to produce the larger, more complete page.
+OPENROUTER_MODELS = (
+    Llm.OPENROUTER_SPACE_BUNNY_LOW,
+    Llm.OPENROUTER_SPACE_BUNNY_HIGH,
+)
+
 # Video variants always use Gemini.
 VIDEO_VARIANT_MODELS = (
     Llm.GEMINI_3_FLASH_PREVIEW_MINIMAL,

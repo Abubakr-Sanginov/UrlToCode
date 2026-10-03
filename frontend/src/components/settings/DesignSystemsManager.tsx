@@ -178,7 +178,7 @@ function DesignSystemsManager({
                 <SelectItem key={designSystem.id} value={designSystem.id}>
                   {designSystem.name}
                   {selectedDesignSystemId === designSystem.id && (
-                    <span className="ml-2 text-xs text-violet-600 dark:text-violet-400">
+                    <span className="ml-2 text-xs text-brand">
                       Default
                     </span>
                   )}
@@ -202,7 +202,7 @@ function DesignSystemsManager({
           <div>
             <label
               htmlFor="design-system-name"
-              className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-zinc-300"
+              className="mb-1.5 block text-xs font-medium text-foreground"
             >
               Name
             </label>
@@ -215,7 +215,7 @@ function DesignSystemsManager({
                 data-testid="design-system-name"
               />
               {isDefault && (
-                <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                <span className="shrink-0 rounded-full bg-brand-subtle px-2 py-0.5 text-xs font-medium text-brand">
                   Default
                 </span>
               )}
@@ -225,7 +225,7 @@ function DesignSystemsManager({
           <div>
             <label
               htmlFor="design-system-content"
-              className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-zinc-300"
+              className="mb-1.5 block text-xs font-medium text-foreground"
             >
               Instructions
             </label>
@@ -239,14 +239,14 @@ function DesignSystemsManager({
             />
           </div>
 
-          <div className="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-zinc-800">
+          <div className="flex items-center justify-between border-t border-border pt-4">
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={handleDelete}
               disabled={isSaving}
-              className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+              className="text-danger hover:bg-danger-subtle hover:text-danger"
             >
               Delete
             </Button>
@@ -276,7 +276,7 @@ function DesignSystemsManager({
           </div>
         </div>
       ) : (
-        <div className="rounded-md border border-dashed border-gray-200 px-4 py-10 text-center text-sm text-gray-500 dark:border-zinc-700 dark:text-zinc-400">
+        <div className="rounded-md border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
           No design systems yet. Click <span className="font-medium">+ New</span>{" "}
           to create one.
         </div>

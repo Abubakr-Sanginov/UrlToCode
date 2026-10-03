@@ -25,6 +25,9 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", None)
 # Models used by the direct-provider paths (url-to-code), where the UI sends
 # no model id. Override via env when an endpoint serves a different catalog.
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL") or "gpt-5.4-mini"
+# Read for the same reason as the three above: a gateway that serves a
+# different catalog, or a different model than the built-in default.
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL") or ""
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3-flash-preview"
 
@@ -42,6 +45,11 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# Where a user is told to write when something breaks. Set SUPPORT_EMAIL
+# before launch; the default names nobody, which is honest about a project
+# that has not chosen an address yet.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 
 # The crawler drives a visible browser by default: Cloudflare-style checks
 # flag headless Chromium and serve "Just a moment..." instead of the site.

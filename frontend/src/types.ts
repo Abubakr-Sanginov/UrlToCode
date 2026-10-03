@@ -28,6 +28,8 @@ export interface Settings {
   geminiApiKey: string | null;
   openRouterApiKey: string | null;
   openRouterModel: string | null;
+  // "", "low", "medium" or "high". Left empty the provider decides.
+  reasoningEffort: string | null;
   // Custom OpenAI-compatible provider (Ollama, vLLM, etc.)
   customProviderBaseUrl: string | null;
   customProviderApiKey: string | null;

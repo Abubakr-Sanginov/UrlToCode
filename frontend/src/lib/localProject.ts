@@ -1,5 +1,17 @@
 import { HTTP_BACKEND_URL } from "../config";
-import { Commit } from "../components/commits/types";
+import { ProjectFile, buildProjectFiles } from "./projectFiles";
+
+// The file layout lives in projectFiles.ts; it is re-exported here because
+// every caller of the save/zip pipeline already imports this module.
+export {
+  buildCodeMapFromCommits,
+  buildProjectFiles,
+  generatedPathFor,
+  GENERATED_FILE_PREFIX,
+  siteNameFromCode,
+  slugifyPagePath,
+} from "./projectFiles";
+export type { ProjectFile } from "./projectFiles";
 
 /**
  * "Open folder & run" pipeline.
@@ -11,13 +23,10 @@ import { Commit } from "../components/commits/types";
  *    can be opened in a tab with one click.
  */
 
-export interface ProjectFile {
-  path: string;
-  content: string;
-}
-
 export interface SaveRunResult {
   savedToFolder: boolean;
+  /** True when the files form a Next.js / React project (run with npm). */
+  isFrameworkProject: boolean;
   folderName: string | null;
   serveUrl: string;
   fileCount: number;
@@ -29,7 +38,7 @@ export class FolderPickCancelled extends Error {}
 // Minimal structural types for the File System Access API. The DOM lib does
 // not ship typings for the picker yet.
 interface FsWritable {
-  write(data: string): Promise<void>;
+  write(data: string | Blob): Promise<void>;
   close(): Promise<void>;
 }
 interface FsFileHandle {
@@ -52,128 +61,9 @@ export function supportsFolderPicker(): boolean {
   return typeof (window as PickerWindow).showDirectoryPicker === "function";
 }
 
-/** Best-effort site name used for folder naming and the README. */
-export function siteNameFromCode(code: Record<string, string>): string {
-  const html =
-    code["project-structure"] ??
-    Object.values(code).find((value) => value && value.trim()) ??
-    "";
-  const match = html.match(/<title[^>]*>([^<]{1,80})<\/title>/i);
-  return match ? match[1].trim() : "cloned-site";
-}
-
-export function slugifyPagePath(raw: string): string {
-  const cleaned = raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return cleaned || "page";
-}
-
-/**
- * Maps the url-to-code output (`{ "project-structure": html, "/about": html, ... }`)
- * onto a flat file tree rooted at `index.html`.
- */
-export function buildProjectFiles(
-  code: Record<string, string>,
-  siteName?: string
-): ProjectFile[] {
-  const keys = Object.keys(code).filter((key) => code[key] && code[key].trim());
-  if (keys.length === 0) return [];
-
-  const files: ProjectFile[] = [];
-  const usedNames = new Set<string>();
-  const portalKey = keys.includes("project-structure") ? "project-structure" : null;
-
-  const uniqueName = (base: string) => {
-    let name = base;
-    let counter = 2;
-    while (usedNames.has(name)) {
-      name = base.replace(/(\.[a-z0-9]+)?$/i, (ext) => `-${counter}${ext ?? ""}`);
-      counter += 1;
-    }
-    usedNames.add(name);
-    return name;
-  };
-
-  // The crawled root page is the clone's real home page, so it owns
-  // index.html. Generated pages link to each other by these names
-  // (backend/prompts/url_to_code_prompts.py `page_filename`).
-  const rootKey = keys.includes("/") ? "/" : null;
-  if (rootKey) {
-    files.push({ path: uniqueName("index.html"), content: code[rootKey] });
-  }
-
-  for (const key of keys) {
-    if (key === portalKey || key === rootKey) continue;
-    if (key === "database-schema") {
-      files.push({ path: "database-schema.sql", content: code[key] });
-      continue;
-    }
-    files.push({
-      path: uniqueName(`${slugifyPagePath(key)}.html`),
-      content: code[key],
-    });
-  }
-
-  // The portal is a generated overview, not part of the copy: it only takes
-  // index.html when the crawl has no root page.
-  if (portalKey) {
-    const portalName =
-      rootKey || usedNames.has("index.html") ? uniqueName("portal.html") : uniqueName("index.html");
-    files.push({ path: portalName, content: code[portalKey] });
-  }
-
-  files.push({
-    path: "README.md",
-    content: buildReadme(siteName ?? "Generated site", files.map((f) => f.path)),
-  });
-  return files;
-}
-
-/**
- * Rebuilds the generated-code map from project commits. Cloned pages are
- * stored as `code_create` commits whose label is the page path ("Portal" for
- * the landing page).
- */
-export function buildCodeMapFromCommits(
-  commits: Record<string, Commit>
-): Record<string, string> {
-  const code: Record<string, string> = {};
-  for (const commit of Object.values(commits)) {
-    if (commit.type !== "code_create") continue;
-    const variantCode = commit.variants[commit.selectedVariantIndex]?.code;
-    if (!variantCode || !variantCode.trim()) continue;
-    const key = commit.label === "Portal" ? "project-structure" : commit.label ?? "/";
-    code[key] = variantCode;
-  }
-  return code;
-}
-
-function buildReadme(siteName: string, fileNames: string[]): string {
-  const list = fileNames.map((name) => `- \`${name}\``).join("\n");
-  return `# ${siteName}
-
-Generated by UrlToCode.
-
-## Run locally
-
-Open \`index.html\` in a browser, or serve this folder with any static server:
-
-\`\`\`bash
-python -m http.server 8080
-\`\`\`
-
-## Files
-
-${list}
-`;
-}
-
 async function writeFileToDirectory(
   dir: FsDirectoryHandle,
-  file: ProjectFile
+  file: { path: string; content: string | Blob }
 ): Promise<void> {
   const segments = file.path.split("/");
   const fileName = segments.pop();
@@ -196,17 +86,23 @@ interface BackendSaveResponse {
   runId: string;
   files: number;
   url: string;
+  /** Captured images/videos the backend copied into the project. */
+  assets?: { path: string; url: string }[];
+  /** Files whose media URLs now point at those copies. */
+  rewritten?: ProjectFile[];
 }
 
 async function mirrorToBackend(
   files: ProjectFile[],
-  siteName: string
-): Promise<string> {
+  siteName: string,
+  sourceUrl: string = ""
+): Promise<BackendSaveResponse> {
   const response = await fetch(`${HTTP_BACKEND_URL}/api/local-project/save`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       siteName,
+      sourceUrl,
       files: files.map((file) => ({ path: file.path, content: file.content })),
     }),
   });
@@ -220,8 +116,36 @@ async function mirrorToBackend(
     }
     throw new Error(`Backend could not save the project (${detail})`);
   }
-  const data = (await response.json()) as BackendSaveResponse;
-  return `${HTTP_BACKEND_URL}${data.url}`;
+  return (await response.json()) as BackendSaveResponse;
+}
+
+/** Writes the project, with the backend's media copies, into `dir`. */
+async function writeProjectToDirectory(
+  dir: FsDirectoryHandle,
+  files: ProjectFile[],
+  saved: BackendSaveResponse
+): Promise<number> {
+  const rewritten = new Map((saved.rewritten ?? []).map((f) => [f.path, f.content]));
+  for (const file of files) {
+    await writeFileToDirectory(dir, {
+      path: file.path,
+      content: rewritten.get(file.path) ?? file.content,
+    });
+  }
+
+  let written = files.length;
+  for (const asset of saved.assets ?? []) {
+    try {
+      const response = await fetch(`${HTTP_BACKEND_URL}${asset.url}`);
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      await writeFileToDirectory(dir, { path: asset.path, content: await response.blob() });
+      written += 1;
+    } catch (error) {
+      // One missing picture must not cost the rest of the project.
+      console.warn(`Could not save ${asset.path}`, error);
+    }
+  }
+  return written;
 }
 
 /**
@@ -230,37 +154,203 @@ async function mirrorToBackend(
  */
 export async function saveAndRunProject(
   code: Record<string, string>,
-  siteName: string
+  siteName: string,
+  overrides: Record<string, string> = {},
+  sourceUrl: string = ""
 ): Promise<SaveRunResult> {
-  const files = buildProjectFiles(code, siteName);
+  const files = buildProjectFiles(code, siteName, overrides);
   if (files.length === 0) {
     throw new Error("Nothing to save yet — wait for the clone to finish.");
   }
 
-  let folderName: string | null = null;
+  // The picker needs the click's user activation, so it opens first; the
+  // files are written once the backend has copied the captured media in.
+  let dir: FsDirectoryHandle | null = null;
   if (supportsFolderPicker()) {
     const picker = (window as PickerWindow).showDirectoryPicker;
     try {
       // `id` reuses the last location and permissions for this picker.
-      const dir = await picker!.call(window, { mode: "readwrite", id: "urltocode-sites" });
-      folderName = dir.name;
-      for (const file of files) {
-        await writeFileToDirectory(dir, file);
-      }
+      dir = await picker!.call(window, { mode: "readwrite", id: "urltocode-sites" });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         throw new FolderPickCancelled("Folder selection cancelled");
       }
-      console.warn("Folder write failed, falling back to backend only", error);
-      folderName = null;
+      console.warn("Folder picker failed, falling back to backend only", error);
     }
   }
 
-  const serveUrl = await mirrorToBackend(files, siteName);
+  const saved = await mirrorToBackend(files, siteName, sourceUrl);
+
+  let folderName: string | null = null;
+  let fileCount = saved.files;
+  if (dir) {
+    try {
+      fileCount = await writeProjectToDirectory(dir, files, saved);
+      folderName = dir.name;
+    } catch (error) {
+      console.warn("Folder write failed, falling back to backend only", error);
+    }
+  }
+
+  // A framework project needs `npm run dev`; its static preview copy is what
+  // the backend can serve right away.
+  const isFrameworkProject = files.some((file) => file.path.startsWith("preview/"));
+  const projectUrl = `${HTTP_BACKEND_URL}${saved.url}`;
+  const serveUrl = isFrameworkProject ? `${projectUrl}preview/` : projectUrl;
   return {
     savedToFolder: folderName !== null,
+    isFrameworkProject,
     folderName,
     serveUrl,
-    fileCount: files.length,
+    fileCount,
   };
+}
+
+/**
+ * Downloads the whole project as one ZIP (pages, framework scaffold and the
+ * captured images/videos). Works in every browser, unlike the folder picker.
+ */
+export async function downloadProjectZip(
+  code: Record<string, string>,
+  siteName: string,
+  overrides: Record<string, string> = {}
+): Promise<number> {
+  const files = buildProjectFiles(code, siteName, overrides);
+  if (files.length === 0) {
+    throw new Error("Nothing to download yet — wait for the clone to finish.");
+  }
+  const saved = await mirrorToBackend(files, siteName);
+  const link = document.createElement("a");
+  link.href = `${HTTP_BACKEND_URL}/api/local-project/${encodeURIComponent(
+    saved.runId
+  )}/zip?name=${encodeURIComponent(siteName)}`;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return saved.files;
+}
+
+/**
+ * The clones this backend has already saved.
+ *
+ * A generated site outlives the tab that made it, and a tool that can only
+ * show you the site you just built is a tool that makes you keep the
+ * backend running to find it again.
+ */
+export interface SavedClone {
+  runId: string;
+  name: string;
+  sourceUrl: string;
+  savedAt: number;
+  pageCount: number;
+  hasServer: boolean;
+  url: string;
+  sizeBytes: number;
+}
+
+export async function fetchCloneLibrary(): Promise<SavedClone[]> {
+  const response = await fetch(`${HTTP_BACKEND_URL}/api/local-project`);
+  if (!response.ok) {
+    throw new Error(`The clone library could not be read (${response.status}).`);
+  }
+  const body = (await response.json()) as { clones?: SavedClone[] };
+  return body.clones ?? [];
+}
+
+/** Forget one saved clone and delete its files. */
+export async function forgetClone(runId: string): Promise<void> {
+  const response = await fetch(
+    `${HTTP_BACKEND_URL}/api/local-project/${encodeURIComponent(runId)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw new Error(`The clone could not be removed (${response.status}).`);
+  }
+}
+
+/**
+ * Downloads the project with the files its host needs.
+ *
+ * Not a deployment: it leaves the project ready to drop on a static host or
+ * push to one that builds a container, which is the step we can honestly
+ * do without a credential the user has not given us.
+ */
+export function downloadDeployBundle(runId: string, name: string): void {
+  const link = document.createElement("a");
+  link.href = `${HTTP_BACKEND_URL}/api/local-project/${encodeURIComponent(
+    runId
+  )}/deploy?name=${encodeURIComponent(name)}`;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+/** A file size in words, for the library list. */
+export function describeProjectSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * A project's own dev server, which hot-reloads when a file changes.
+ *
+ * Separate from the static preview on purpose: this runs model-generated
+ * code on the user's machine, so it is started by an explicit action and
+ * never by saving.
+ */
+export interface DevServerInfo {
+  runId: string;
+  running: boolean;
+  url: string;
+  startedAt: number;
+  log: string[];
+  error: string;
+}
+
+async function devRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${HTTP_BACKEND_URL}${path}`, init);
+  if (!response.ok) {
+    let detail = `status ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // keep the status-code detail
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as T;
+}
+
+export async function startDevServer(runId: string): Promise<DevServerInfo> {
+  return devRequest<DevServerInfo>(`/api/local-project/${encodeURIComponent(runId)}/dev`, {
+    method: "POST",
+  });
+}
+
+export async function stopDevServer(runId: string): Promise<boolean> {
+  const result = await devRequest<{ stopped: boolean }>(
+    `/api/local-project/${encodeURIComponent(runId)}/dev`,
+    { method: "DELETE" }
+  );
+  return result.stopped;
+}
+
+/** Push one edited file into the running project so the dev server reloads. */
+export async function pushDevFile(
+  runId: string,
+  path: string,
+  content: string
+): Promise<void> {
+  await devRequest<{ path: string }>(
+    `/api/local-project/${encodeURIComponent(runId)}/dev/file`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    }
+  );
 }

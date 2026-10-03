@@ -18,6 +18,26 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def signed_in(client: TestClient, tmp_path: Any) -> None:
+    """Every run needs an account now, so give each test one.
+
+    Signed in rather than allowed through: the point of these tests is what
+    a run does once it is allowed to happen, and letting them past a limit
+    would test a path no user can reach.
+    """
+    import accounts as accounts_module
+    from routes import accounts as accounts_route
+
+    accounts_module.DB_PATH = tmp_path / "accounts.db"
+    accounts_module._initialised = False
+    account = accounts_module.register("ws@test.dev", "correct horse battery")
+    client.cookies.set(
+        accounts_route.SESSION_COOKIE,
+        accounts_route._sign(account.id, __import__("time").time()),
+    )
+
+
 def _drain(ws: Any) -> List[Dict[str, Any]]:
     """Collect messages until the server closes the socket."""
     from starlette.websockets import WebSocketDisconnect
@@ -264,7 +284,10 @@ def test_provider_refusal_mid_run_aborts_with_the_reason(
 def test_default_openrouter_model_is_used_when_client_sends_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Both cleared: a model in .env is a deliberate choice, and this is
+    # about what happens when nothing at all was chosen.
     monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", None)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_MODEL", None, raising=False)
 
     cfg = url_to_code._llm_config_for(
         url_to_code.UrlToCodeParams(
@@ -276,8 +299,9 @@ def test_default_openrouter_model_is_used_when_client_sends_none(
     # both halves of that contract are checked here.
     assert cfg.provider == "openrouter" and cfg.model == ""
     assert llm_http._openai_style_model(cfg) == llm_http.DEFAULT_OPENROUTER_MODEL
-    # A retired free tier here breaks every default run, so keep it explicit.
-    assert llm_http.DEFAULT_OPENROUTER_MODEL.endswith(":free")
+    # The ":free" entry stayed in the catalog after the tier was retired, so
+    # every default run failed with a 404 that read like a model error.
+    assert ":free" not in llm_http.DEFAULT_OPENROUTER_MODEL
 
 
 def test_every_generated_page_is_returned(
@@ -412,7 +436,7 @@ def test_a_plan_is_not_shipped_as_the_clone(
         messages = _drain(ws)
 
     assert not any(m["type"] == "setCode" for m in messages)
-    assert "single-file-retry" in attempts
+    assert any(a.startswith("single-file-retry") for a in attempts)
     error = next(m for m in messages if m["type"] == "error")
     assert "commentary" in error["value"]
     assert "masthead" in error["value"]
@@ -451,6 +475,162 @@ def _pages(count: int, html: str = "<html><body>hi</body></html>") -> List[Crawl
         CrawlPage(url=f"https://site.test/p{i}", path=f"/p{i}", title=f"P{i}", html=html)
         for i in range(count)
     ]
+
+
+def _confirming_client(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, chosen: List[str]
+) -> List[str]:
+    """A client that answers the page-selection question, and records the order.
+
+    The recording is how the money is checked: the paths the model was asked
+    for are the paths the user picked, and nothing else.
+    """
+    asked: List[str] = []
+
+    async def crawl_many(self: Any, start_url: str) -> CrawlResult:
+        return CrawlResult(
+            base_url=start_url,
+            pages=[
+                CrawlPage(
+                    url=f"{start_url}{path}",
+                    path=path,
+                    title=path,
+                    html="<html><body>hi</body></html>",
+                )
+                for path in ("/", "/about", "/blog/post-1", "/login")
+            ],
+        )
+
+    async def generate(
+        _prompt: str, *_args: Any, event_prefix: str = "gen", **_kwargs: Any
+    ) -> Completion:
+        asked.append(event_prefix)
+        return Completion(text="<!DOCTYPE html><html><body>page</body></html>")
+
+    monkeypatch.setattr(url_to_code.SiteCrawler, "crawl", crawl_many)
+    monkeypatch.setattr(url_to_code, "_generate_with_llm", generate)
+    monkeypatch.setattr(url_to_code, "_run_agent_for_page", generate)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", "test-key")
+    return asked
+
+
+def _await_question(ws: Any) -> Dict[str, Any]:
+    """Read up to the page-selection question, skipping the progress before it.
+
+    The server says what it is doing first, and a test that assumed the very
+    next message was the question would break the moment another status line
+    was added - without ever showing why.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    while True:
+        try:
+            message = ws.receive_json()
+        except (WebSocketDisconnect, RuntimeError):
+            raise AssertionError("the server never asked which pages to build")
+        if message.get("type") == "pageSelection":
+            return message
+
+
+def test_only_the_pages_the_user_picked_are_generated(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crawler that found four pages does not mean four model calls."""
+    asked = _confirming_client(client, monkeypatch, ["/", "/about"])
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(json.dumps({"url": "https://site.test", "confirmPages": True}))
+        question = _await_question(ws)
+        assert [entry["path"] for entry in question["data"]["pages"]] == [
+            "/",
+            "/about",
+            "/blog/post-1",
+            "/login",
+        ]
+        ws.send_text(json.dumps({"type": "pageSelection", "paths": ["/", "/about"]}))
+        messages = _drain(ws)
+
+    # Two of the four. The blog post and the login screen are never asked for.
+    code = next(m for m in messages if m["type"] == "setCode")["data"]["code"]
+    assert "/" in code
+    assert "/about" in code
+    assert "/blog/post-1" not in code
+    assert "/login" not in code
+    assert asked
+
+
+def test_a_run_with_no_pages_picked_stops_without_asking_the_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _confirming_client(client, monkeypatch, [])
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(json.dumps({"url": "https://site.test", "confirmPages": True}))
+        _await_question(ws)
+        ws.send_text(json.dumps({"type": "pageSelection", "paths": []}))
+        messages = _drain(ws)
+
+    # The user looked at the list and chose none of it. Generating anyway
+    # would spend their money on a decision they did not make.
+    assert asked == []
+    assert any(m["type"] == "status" and "No pages selected" in m["value"] for m in messages)
+    assert not any(m["type"] == "setCode" for m in messages)
+
+
+def test_a_client_that_never_answers_does_not_get_the_whole_site(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _confirming_client(client, monkeypatch, [])
+    monkeypatch.setattr(url_to_code, "PAGE_SELECTION_TIMEOUT_SECONDS", 0.05)
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(json.dumps({"url": "https://site.test", "confirmPages": True}))
+        _await_question(ws)  # the question, then silence
+        messages = _drain(ws)
+
+    assert asked == []
+    assert not any(m["type"] == "setCode" for m in messages)
+
+
+def test_a_site_of_one_page_is_built_without_asking(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A question with one possible answer is an obstacle, not a choice."""
+
+    async def crawl_one(self: Any, start_url: str) -> CrawlResult:
+        return CrawlResult(base_url=start_url, pages=_pages(1))
+
+    async def generate(
+        _prompt: str, *_args: Any, event_prefix: str = "gen", **_kwargs: Any
+    ) -> Completion:
+        return Completion(text="<!DOCTYPE html><html><body>page</body></html>")
+
+    monkeypatch.setattr(url_to_code.SiteCrawler, "crawl", crawl_one)
+    monkeypatch.setattr(url_to_code, "_generate_with_llm", generate)
+    monkeypatch.setattr(url_to_code, "_run_agent_for_page", generate)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", "test-key")
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(json.dumps({"url": "https://site.test", "confirmPages": True}))
+        messages = _drain(ws)
+
+    assert not any(m["type"] == "pageSelection" for m in messages)
+    assert any(m["type"] == "setCode" for m in messages)
+
+
+def test_the_step_is_off_unless_asked_for(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = _confirming_client(client, monkeypatch, [])
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(json.dumps({"url": "https://site.test"}))
+        messages = _drain(ws)
+
+    # Generating straight away is what a user who never asked for the step
+    # expects; a modal they did not ask for is worse than no step at all.
+    assert not any(m["type"] == "pageSelection" for m in messages)
+    assert any(m["type"] == "setCode" for m in messages)
 
 
 def test_a_large_site_is_generated_per_page_despite_the_single_file_request(
@@ -524,3 +704,122 @@ def test_a_page_heavy_structure_also_falls_back() -> None:
     assert url_to_code._single_file_too_large(
         CrawlResult(base_url="https://site.test", pages=_pages(9)), "x" * 500
     )
+
+
+def test_nextjs_stack_returns_page_components_without_portal(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A framework stack yields one component per route, even with singleFile."""
+
+    async def crawl_two(self: Any, start_url: str) -> CrawlResult:
+        return CrawlResult(
+            base_url=start_url,
+            pages=[
+                CrawlPage(url=f"{start_url}{path}", path=path, title=path, html="<html/>")
+                for path in ("/", "/about")
+            ],
+        )
+
+    async def fail_if_called(*_args: Any, **_kwargs: Any) -> Completion:
+        raise AssertionError("no portal or single file for a framework stack")
+
+    async def page(*_args: Any, **_kwargs: Any) -> Completion:
+        return Completion(
+            text='```tsx\n"use client";\nexport default function Page() {\n'
+            "  return <main>page</main>;\n}\n```"
+        )
+
+    monkeypatch.setattr(url_to_code.SiteCrawler, "crawl", crawl_two)
+    monkeypatch.setattr(url_to_code, "_generate_with_llm", fail_if_called)
+    monkeypatch.setattr(url_to_code, "_run_agent_for_page", page)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", "test-key")
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(
+            json.dumps(
+                {"url": "https://example.com", "stack": "nextjs_tailwind", "singleFile": True}
+            )
+        )
+        messages = _drain(ws)
+
+    code = next(m for m in messages if m["type"] == "setCode")["data"]["code"]
+
+    assert set(code) == {"/", "/about"}
+    assert 'data-framework="nextjs"' in code["/about"]
+    assert 'data-route="/about"' in code["/about"]
+    assert "export default function Page()" in code["/about"]
+
+
+def test_the_retry_allowance_is_handed_out_once() -> None:
+    budget = url_to_code.RetryBudget(2)
+
+    assert budget.take()
+    assert budget.take()
+    assert not budget.take()
+    assert (budget.used, budget.remaining) == (2, 0)
+
+
+def test_no_retries_means_no_extra_attempts() -> None:
+    assert not url_to_code.RetryBudget(0).take()
+    assert not url_to_code.RetryBudget(-1).take()
+
+
+def test_max_retries_is_one_budget_for_the_whole_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Advanced options offers one number, so the run gets one number of retries.
+
+    The portal page spends it here; a page that later answers with a plan gets
+    no second chance, instead of a fresh allowance of its own.
+    """
+
+    async def crawl_two(self: Any, start_url: str) -> CrawlResult:
+        return CrawlResult(
+            base_url=start_url,
+            pages=[
+                CrawlPage(url=f"{start_url}{path}", path=path, title=path, html="<html/>")
+                for path in ("/", "/about")
+            ],
+        )
+
+    calls: List[str] = []
+
+    async def plan_only(
+        _prompt: str, *_args: Any, event_prefix: str = "gen", **_kwargs: Any
+    ) -> Completion:
+        calls.append(event_prefix)
+        return Completion(text="I will recreate this with divs:")
+
+    async def page(page_data: Dict[str, Any], *_args: Any, **_kwargs: Any) -> Completion:
+        path = str(page_data.get("path", "/"))
+        calls.append(path)
+        if path == "/":
+            return Completion(text="<!DOCTYPE html><html><body>home</body></html>")
+        return Completion(text="still planning")
+
+    monkeypatch.setattr(url_to_code.SiteCrawler, "crawl", crawl_two)
+    monkeypatch.setattr(url_to_code, "_generate_with_llm", plan_only)
+    monkeypatch.setattr(url_to_code, "_run_agent_for_page", page)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", "test-key")
+
+    with client.websocket_connect("/url-to-code") as ws:
+        ws.send_text(
+            json.dumps({"url": "https://example.com", "maxRetries": 1})
+        )
+        messages = _drain(ws)
+
+    # One portal retry, then no retries left for the page that failed.
+    assert calls.count("structure") == 1
+    assert calls.count("structure-retry-1") == 1
+    assert calls.count("/") == 1
+    assert calls.count("/about") == 1
+    assert "pageComplete" in [m["type"] for m in messages]
+    failed = next(
+        m
+        for m in messages
+        if m["type"] == "pageComplete" and m["data"]["path"] == "/about"
+    )
+    assert failed["data"]["error"] is True
+    code = next(m for m in messages if m["type"] == "setCode")["data"]["code"]
+    # No usable portal was generated, so the home page stands in for it.
+    assert code["project-structure"] == code["/"]

@@ -41,6 +41,12 @@ from config import (
     OPENROUTER_API_KEY,
 )
 from crawler.crawler import CrawlResult, SiteCrawler
+from prompts.framework_stacks import (
+    clean_component_output,
+    is_framework_stack,
+    route_for_path,
+    wrap_component_preview,
+)
 from prompts.url_to_code_prompts import (
     build_database_schema_prompt,
     build_page_prompt,
@@ -212,6 +218,16 @@ async def generate_one(
         completion = await call_llm(provider, messages, api_key, base_url, model)
     if not completion:
         raise RuntimeError(f"empty response for {page['path']}")
+    if is_framework_stack(args.stack):
+        # The CLI writes a static site, so a page component ships inside
+        # the same self-rendering preview document the web app uses.
+        component = clean_component_output(completion)
+        return filename, wrap_component_preview(
+            component,
+            args.stack,
+            route_for_path(page["path"]),
+            page.get("title", "Page"),
+        )
     return filename, _clean_llm_output(completion)
 
 
@@ -388,7 +404,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--stack",
         default="html_tailwind",
-        help="html_tailwind | html_css | react_tailwind | bootstrap | vue_tailwind | ionic_tailwind",
+        help="html_tailwind | html_css | react_tailwind | nextjs_tailwind | bootstrap | vue_tailwind | ionic_tailwind",
     )
     parser.add_argument("--max-pages", type=int, default=10)
     parser.add_argument("--max-depth", type=int, default=2)

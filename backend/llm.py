@@ -55,6 +55,13 @@ class Llm(Enum):
     GEMINI_3_6_FLASH_LOW = "gemini-3.6-flash (low thinking)"
     GEMINI_3_6_FLASH_MINIMAL = "gemini-3.6-flash (minimal thinking)"
 
+    # OpenRouter models
+    OPENROUTER_SPACE_BUNNY_LOW = "space-bunny (low thinking)"
+    OPENROUTER_SPACE_BUNNY_MEDIUM = "space-bunny (medium thinking)"
+    OPENROUTER_SPACE_BUNNY_HIGH = "space-bunny (high thinking)"
+    OPENROUTER_LING_FLASH_LOW = "ling-3.0-flash (low thinking)"
+    OPENROUTER_LING_FLASH_HIGH = "ling-3.0-flash (high thinking)"
+
 
 class Completion(TypedDict):
     duration: float
@@ -115,12 +122,58 @@ MODEL_PROVIDER: dict[Llm, str] = {
     Llm.GEMINI_3_6_FLASH_MEDIUM: "gemini",
     Llm.GEMINI_3_6_FLASH_LOW: "gemini",
     Llm.GEMINI_3_6_FLASH_MINIMAL: "gemini",
+    # OpenRouter models. The editor had no way to reach OpenRouter at all,
+    # so a project configured for it could clone a site and then not edit
+    # it: the edit went to whichever of OpenAI/Gemini/Anthropic happened to
+    # have a key in the environment instead.
+    Llm.OPENROUTER_SPACE_BUNNY_LOW: "openrouter",
+    Llm.OPENROUTER_SPACE_BUNNY_MEDIUM: "openrouter",
+    Llm.OPENROUTER_SPACE_BUNNY_HIGH: "openrouter",
+    Llm.OPENROUTER_LING_FLASH_LOW: "openrouter",
+    Llm.OPENROUTER_LING_FLASH_HIGH: "openrouter",
 }
 
 # Convenience sets for membership checks
 OPENAI_MODELS = {m for m, p in MODEL_PROVIDER.items() if p == "openai"}
 ANTHROPIC_MODELS = {m for m, p in MODEL_PROVIDER.items() if p == "anthropic"}
 GEMINI_MODELS = {m for m, p in MODEL_PROVIDER.items() if p == "gemini"}
+OPENROUTER_MODELS = {m for m, p in MODEL_PROVIDER.items() if p == "openrouter"}
+
+# OpenRouter speaks the OpenAI chat protocol, so these models are served by
+# the OpenAI provider pointed at OpenRouter's own URL rather than needing a
+# provider of their own.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+OPENROUTER_MODEL_CONFIG: dict[Llm, dict[str, str]] = {
+    Llm.OPENROUTER_SPACE_BUNNY_LOW: {
+        "api_name": "stealth/space-bunny-alpha",
+        "reasoning_effort": "low",
+    },
+    Llm.OPENROUTER_SPACE_BUNNY_MEDIUM: {
+        "api_name": "stealth/space-bunny-alpha",
+        "reasoning_effort": "medium",
+    },
+    Llm.OPENROUTER_SPACE_BUNNY_HIGH: {
+        "api_name": "stealth/space-bunny-alpha",
+        "reasoning_effort": "high",
+    },
+    Llm.OPENROUTER_LING_FLASH_LOW: {
+        "api_name": "inclusionai/ling-3.0-flash-fin",
+        "reasoning_effort": "low",
+    },
+    Llm.OPENROUTER_LING_FLASH_HIGH: {
+        "api_name": "inclusionai/ling-3.0-flash-fin",
+        "reasoning_effort": "high",
+    },
+}
+
+
+def get_openrouter_api_name(model: Llm) -> str:
+    return OPENROUTER_MODEL_CONFIG[model]["api_name"]
+
+
+def get_openrouter_reasoning_effort(model: Llm) -> str | None:
+    return OPENROUTER_MODEL_CONFIG.get(model, {}).get("reasoning_effort")
 
 OPENAI_MODEL_CONFIG: dict[Llm, dict[str, str]] = {
     Llm.GPT_5_4_MINI_LOW: {"api_name": "gpt-5.4-mini", "reasoning_effort": "low"},

@@ -14,6 +14,7 @@ def build_update_prompt_from_history(
     history: list[PromptHistoryMessage],
     image_generation_enabled: bool,
     design_system: str | None = None,
+    attached_pages_block: str | None = None,
 ) -> Prompt:
     first_user_index = next(
         (index for index, item in enumerate(history) if item["role"] == "user"),
@@ -57,5 +58,19 @@ def build_update_prompt_from_history(
             continue
 
         prompt_messages.append(build_history_message(item))
+
+    # Pages the user referenced by URL arrive as their own trailing message,
+    # after the current file content, so the agent reads the capture last.
+    if attached_pages_block:
+        prompt_messages.append(
+            build_history_message(
+                {
+                    "role": "user",
+                    "text": attached_pages_block,
+                    "images": [],
+                    "videos": [],
+                }
+            )
+        )
 
     return prompt_messages

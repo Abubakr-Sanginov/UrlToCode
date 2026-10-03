@@ -43,7 +43,7 @@ function getDesignSystemUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-export function createHttpDesignSystemsRequest(
+function createHttpDesignSystemsRequest(
   baseUrl = HTTP_BACKEND_URL,
   fetcher: typeof fetch = fetch
 ): DesignSystemsRequest {
@@ -64,7 +64,7 @@ export function createHttpDesignSystemsRequest(
   };
 }
 
-export function createDesignSystemsClient(
+function createDesignSystemsClient(
   request: DesignSystemsRequest
 ): DesignSystemsClient {
   return {

@@ -140,33 +140,52 @@ def format_prompt_preview(
 
 
 def print_prompt_preview(prompt_messages: List[ChatCompletionMessageParam]) -> None:
-    preview = format_prompt_preview(prompt_messages)
-    lines = preview.split("\n")
-    max_length = max(len(line) for line in lines) if lines else 20
-    max_length = max(20, min(120, max_length))
+    """Draw the prompt to the console.
 
-    title = "PROMPT PREVIEW"
-    max_length = max(max_length, len(title) + 4)
+    Purely a diagnostic. It is called from the middle of a generation, so
+    nothing here is allowed to stop one: a console that cannot encode the
+    frame, or a stream that has already been closed, must cost the log
+    line and nothing more. The first version of this drew a box with
+    box-drawing characters and raised UnicodeEncodeError on a Windows
+    cp1251 console - which killed every edit before the model ran.
+    """
+    try:
+        preview = format_prompt_preview(prompt_messages)
+        lines = preview.split("\n")
+        max_length = max(len(line) for line in lines) if lines else 20
+        max_length = max(20, min(120, max_length))
 
-    print("┌─" + "─" * max_length + "─┐")
-    title_padding = (max_length - len(title)) // 2
-    print(
-        f"│ {' ' * title_padding}{title}{' ' * (max_length - len(title) - title_padding)} │"
-    )
-    print("├─" + "─" * max_length + "─┤")
+        title = "PROMPT PREVIEW"
+        max_length = max(max_length, len(title) + 4)
 
-    for line in lines:
-        if len(line) <= max_length:
-            print(f"│ {line:<{max_length}} │")
-        else:
-            wrapped = textwrap.wrap(
-                line, width=max_length, break_long_words=False, break_on_hyphens=False
-            )
-            for wrapped_line in wrapped:
-                print(f"│ {wrapped_line:<{max_length}} │")
+        print("+-" + "-" * max_length + "-+")
+        title_padding = (max_length - len(title)) // 2
+        print(
+            f"| {' ' * title_padding}{title}"
+            f"{' ' * (max_length - len(title) - title_padding)} |"
+        )
+        print("+-" + "-" * max_length + "-+")
 
-    print("└─" + "─" * max_length + "─┘")
-    print()
+        for line in lines:
+            if len(line) <= max_length:
+                print(f"| {line:<{max_length}} |")
+            else:
+                wrapped = textwrap.wrap(
+                    line, width=max_length, break_long_words=False, break_on_hyphens=False
+                )
+                for wrapped_line in wrapped:
+                    print(f"| {wrapped_line:<{max_length}} |")
+
+        print("+-" + "-" * max_length + "-+")
+        print()
+    except Exception as exc:
+        # One line, and ASCII only: this message is the last thing that can
+        # be printed, so it cannot assume the encoding that just failed -
+        # nor a stream that still works.
+        try:
+            print(f"[Prompt] Preview could not be drawn: {type(exc).__name__}")
+        except Exception:
+            pass
 
 
 def truncate_data_strings(data: Any):  # type: ignore

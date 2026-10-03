@@ -91,7 +91,9 @@ def test_compact_html_strips_data_uris():
 
 
 def _page(
-    path: str = "/", html: str = "<html><body><h1>Hi</h1></body></html>"
+    path: str = "/",
+    html: str = "<html><body><h1>Hi</h1></body></html>",
+    **extra: Any,
 ) -> dict[str, Any]:
     return {
         "url": f"https://example.com{path}",
@@ -112,6 +114,7 @@ def _page(
         ],
         "images": [],
         "depth": 0,
+        **extra,
     }
 
 
@@ -147,6 +150,69 @@ def test_build_page_prompt_handles_missing_fields():
 
     assert "NAV: none" in prompt
     assert "FORMS:" not in prompt
+
+
+def test_measured_widths_reach_the_prompt():
+    page = _page(
+        viewport_screenshots={
+            "desktop": {"file": "d.jpg", "width": 1440, "height": 900},
+            "mobile": {"file": "m.jpg", "width": 375, "height": 2400},
+        },
+        layout_notes=["On mobile the page is 2.7x taller: columns stack."],
+    )
+
+    prompt = build_page_prompt(page, "html_tailwind")[0]["content"]
+
+    assert "RESPONSIVE" in prompt
+    assert "mobile 375px" in prompt
+    assert "columns stack" in prompt
+    assert "media queries" in prompt
+
+
+def test_no_widths_means_no_invented_mobile_layout():
+    # Without a measurement the honest instruction is a sensible responsive
+    # page, not a claim about what the original does at 375px.
+    prompt = build_page_prompt(_page(), "html_tailwind")[0]["content"]
+
+    assert "RESPONSIVE" not in prompt
+    assert "375" not in prompt
+
+
+def test_one_width_is_not_enough_to_describe_a_responsive_layout():
+    page = _page(
+        viewport_screenshots={"desktop": {"file": "d.jpg", "width": 1440, "height": 900}},
+        layout_notes=["everything matches"],
+    )
+
+    assert "RESPONSIVE" not in build_page_prompt(page, "html_tailwind")[0]["content"]
+
+
+def test_captured_states_reach_the_prompt_with_their_trigger():
+    page = _page(
+        states=[
+            {
+                "name": "Open menu",
+                "label": "Menu",
+                "selector": "button",
+                "screenshot": "m.jpg",
+            }
+        ]
+    )
+
+    prompt = build_page_prompt(page, "html_tailwind")[0]["content"]
+
+    assert "STATES" in prompt
+    assert "Open menu" in prompt
+    assert "Menu" in prompt
+    assert "reveals nothing" in prompt
+
+
+def test_no_captured_states_means_no_invented_behaviour():
+    # Without a capture the page has no evidence of a menu or a dialog, and
+    # inventing one is worse than leaving the clone faithful to what loads.
+    prompt = build_page_prompt(_page(), "html_tailwind")[0]["content"]
+
+    assert "STATES" not in prompt
 
 
 def _crawl_result(page_count: int = 40) -> CrawlResult:
@@ -213,7 +279,11 @@ def test_stack_selection_changes_output_contract():
     bootstrap = build_page_prompt(page, "bootstrap")[0]["content"]
     vue = build_page_prompt(page, "vue_tailwind")[0]["content"]
 
-    assert "react-dom" in react and "text/babel" in react
+    nextjs = build_page_prompt(page, "nextjs_tailwind")[0]["content"]
+
+    assert "React 18 page component" in react and "<!DOCTYPE" not in react
+    assert "Next.js 14 App Router" in nextjs and '"use client";' in nextjs
+    assert "export default function Page()" in nextjs
     assert "No CSS framework" in plain_css
     assert "cdn.tailwindcss.com" not in plain_css
     assert "Bootstrap 5" in bootstrap and "No Tailwind" in bootstrap

@@ -141,6 +141,104 @@ def test_provider_refusals_explain_themselves() -> None:
     assert "Pick a different model" in message
 
 
+def _recorded_request(cfg: LlmConfig) -> Dict[str, Any]:
+    """Run one completion and return the JSON body the provider received.
+
+    Raises if nothing was sent: an unsent request looks like an absent
+    field, and that is how "the setting is left out on purpose" once passed
+    against a config the layer refused to use in the first place.
+    """
+    import asyncio
+
+    captured: Dict[str, Any] = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {
+                "choices": [{"message": {"content": "<!DOCTYPE html></html>"}}],
+                "usage": {},
+            }
+
+    async def _post(
+        _self: object, _url: str, headers: Dict[str, Any] = {}, json: Dict[str, Any] = {}
+    ) -> object:
+        captured.update(json)
+        return _Response()
+
+    original = llm_http.httpx.AsyncClient.post
+    llm_http.httpx.AsyncClient.post = _post  # type: ignore[assignment]
+    try:
+        asyncio.run(llm_http.complete(cfg, "system", "user", max_tokens=128, timeout=5))
+    finally:
+        llm_http.httpx.AsyncClient.post = original  # type: ignore[assignment]
+    assert captured, "no request was sent, so nothing here was checked"
+    return captured
+
+
+def _config(**overrides: str) -> LlmConfig:
+    return LlmConfig(
+        provider="openrouter", model="a/b", api_key="test-key", **overrides
+    )
+
+
+def test_reasoning_effort_is_left_out_unless_it_is_asked_for() -> None:
+    """An ordinary model should not receive a field it does not know."""
+    body = _recorded_request(_config())
+
+    assert "reasoning" not in body
+
+
+def test_a_reasoning_model_can_be_asked_to_think_less() -> None:
+    """Asking for a page made the model think for 259s and return nothing.
+
+    With `low` the same prompt came back as a whole page in 34s, so the
+    setting has to reach the provider rather than being a local guess.
+    """
+    body = _recorded_request(_config(reasoning_effort="low"))
+
+    assert body["reasoning"] == {"effort": "low"}
+    assert body["messages"], "the rest of the request must be unchanged"
+
+
+def test_a_blank_effort_is_never_sent() -> None:
+    """An empty string is what an untouched setting holds."""
+    body = _recorded_request(_config(reasoning_effort=""))
+
+    assert "reasoning" not in body
+
+
+def test_the_effort_survives_the_round_trip_through_a_dict() -> None:
+    """Runs are resumed from stored parameters, not from a live config."""
+    restored = LlmConfig.from_dict(
+        {"provider": "openrouter", "model": "a/b", "reasoning_effort": "low"}
+    )
+
+    assert restored.reasoning_effort == "low"
+
+
+def test_the_configured_model_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OPENROUTER_MODEL used to be read by nobody.
+
+    With the model left empty the request fell back to the built-in default,
+    so a gateway configured through .env answered for a different model than
+    the one it was set up for - here a 404 on a retired free slug.
+    """
+    import config as config_module
+    from routes import url_to_code
+
+    monkeypatch.setattr(url_to_code, "OPENROUTER_MODEL", "chosen/from-env", raising=False)
+    monkeypatch.setattr(url_to_code, "OPENROUTER_API_KEY", "sk-env", raising=False)
+
+    chosen = url_to_code._llm_config_for(url_to_code.UrlToCodeParams(url="https://x.test"))
+
+    assert chosen.provider == "openrouter"
+    assert chosen.model == "chosen/from-env"
+    assert config_module is not None
+
+
 def test_worker_params_are_read_from_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     """The crawler's parameters carry an API key, so they never hit argv."""
     import io as _io

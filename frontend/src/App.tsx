@@ -33,6 +33,10 @@ import {
 import { useEscapeToExitSelectMode } from "./components/select-and-edit/useEscapeToExitSelectMode";
 import Sidebar from "./components/sidebar/Sidebar";
 import IconStrip from "./components/sidebar/IconStrip";
+import { SignInDialog } from "./components/SignInDialog";
+import { AdminDialog } from "./components/sidebar/AdminDialog";
+import { ProjectsPage } from "./components/sidebar/ProjectsPage";
+import { useAccountUi } from "./store/account-ui-store";
 import HistoryDisplay from "./components/history/HistoryDisplay";
 import PreviewPane from "./components/preview/PreviewPane";
 import StartPane from "./components/start-pane/StartPane";
@@ -41,6 +45,12 @@ import DesignSystemsModal from "./components/settings/DesignSystemsModal";
 import { AiEditCommit, Commit } from "./components/commits/types";
 import { createCommit } from "./components/commits/utils";
 import { useUrlToCode } from "./hooks/useUrlToCode";
+import { pagePathForLabel, useCloneStore } from "./store/clone-store";
+import { regeneratePage } from "./lib/cloneRuns";
+import { buildCodeMapFromCommits, projectFileForPage } from "./lib/projectFiles";
+
+/** Toast id of the per-page regeneration, so a later toast replaces it. */
+const REGENERATE_TOAST_ID = "clone-page-regenerate";
 
 function App() {
   const {
@@ -70,6 +80,9 @@ function App() {
     startAgentEvent,
     appendAgentEventContent,
     finishAgentEvent,
+
+    // Project files edited by hand or rewritten by a regeneration
+    setFileOverride,
 
     // Outputs
     appendExecutionConsole,
@@ -105,6 +118,7 @@ function App() {
       isTermOfServiceAccepted: false,
       openRouterApiKey: null,
       openRouterModel: null,
+      reasoningEffort: null,
       // Custom OpenAI-compatible provider
       customProviderBaseUrl: null,
       customProviderApiKey: null,
@@ -113,14 +127,60 @@ function App() {
     "setting"
   );
   const [appTheme, setAppTheme] = usePersistedState<AppTheme>(
-    AppTheme.SYSTEM,
+    // The product is dark-first; SYSTEM/LIGHT remain available in Settings.
+    AppTheme.DARK,
     "app-theme"
   );
 
   const wsRef = useRef<WebSocket>(null);
+  // Where the sign-in dialog is opened from, and closed after a sign-in
+  // succeeds.
+  const isSignInOpen = useAccountUi((state) => state.isSignInOpen);
+  const closeSignIn = useAccountUi((state) => state.closeSignIn);
+  const isAdminOpen = useAccountUi((state) => state.isAdminOpen);
+  const closeAdmin = useAccountUi((state) => state.closeAdmin);
+  const openAdmin = useAccountUi((state) => state.openAdmin);
+
+  const openSignIn = useAccountUi((state) => state.openSignIn);
+
+  // A failed sign-in at GitHub or Google comes back to the address with a
+  // message on it rather than through any in-memory channel, because the
+  // browser left for the provider and everything this tab was holding is
+  // gone. Reopening the dialog is what puts that message where it can be
+  // read; without it the person is dropped on the start screen with no idea
+  // that anything went wrong.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("signInError")) {
+      openSignIn();
+    }
+  }, [openSignIn]);
+
+  // First visit to the admin screen, with no link to follow: open it when
+  // the address carries the marker. Once the operator has typed their
+  // token in, the panel links to it from then on, and everyone else
+  // never sees a mention of it.
+  useEffect(() => {
+    const openFromHash = () => {
+      if (window.location.hash === "#admin") openAdmin();
+    };
+    openFromHash();
+    // Typing the address is a same-document move: the page is not
+    // reloaded, so the check above has already run by the time the hash
+    // appears.
+    window.addEventListener("hashchange", openFromHash);
+    return () => window.removeEventListener("hashchange", openFromHash);
+  }, [openAdmin]);
+  const [isProjectsPageOpen, setIsProjectsPageOpen] = useState(false);
   const lastThinkingEventIdRef = useRef<Record<number, string>>({});
   const lastAssistantEventIdRef = useRef<Record<number, string>>({});
   const lastToolEventIdRef = useRef<Record<number, string>>({});
+
+  // The project is restored from IndexedDB, which is asynchronous. Rendering
+  // before it lands would flash the start screen over a project the user
+  // already has.
+  const [isProjectRestored, setIsProjectRestored] = useState(
+    useProjectStore.persist.hasHydrated()
+  );
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -174,6 +234,22 @@ function App() {
   useBrowserTabIndicator(appState === AppState.CODING);
 
   useEscapeToExitSelectMode();
+
+  // A restored project has to move the app out of INITIAL, or the start screen
+  // covers it and the code looks lost.
+  useEffect(() => {
+    const finish = () => setIsProjectRestored(true);
+    const unsubscribe = useProjectStore.persist.onFinishHydration(finish);
+    // Covers the case where hydration already finished before this effect ran.
+    if (useProjectStore.persist.hasHydrated()) finish();
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!isProjectRestored) return;
+    if (Object.keys(useProjectStore.getState().commits).length === 0) return;
+    setAppState(AppState.CODE_READY);
+  }, [isProjectRestored, setAppState]);
 
   // When the user already has the settings in local storage, newly added keys
   // do not get added to the settings so if it's falsy, we populate it with the default
@@ -253,6 +329,31 @@ function App() {
 
   urlToCodeRef.current = urlToCode.reset;
 
+  // A project the user picked from the list arrives here rather than being
+  // loaded by the list itself: this importer lives in the app, and the
+  // list is its sibling. Same door the clone's own code comes through, so
+  // a project opens exactly as the run that made it did.
+  const pendingProject = useAccountUi((state) => state.pendingProject);
+  const takePendingProject = useAccountUi((state) => state.takePendingProject);
+  const lastOpenedProject = useRef<Record<string, string> | null>(null);
+  // The importer is rebuilt on every render, so it is reached through a
+  // ref: naming it as a dependency would re-load the project each time
+  // anything else changed.
+  const importProjectRef = useRef<((code: Record<string, string>) => void) | null>(
+    null
+  );
+  importProjectRef.current = importUrlToCode;
+
+  useEffect(() => {
+    if (pendingProject !== lastOpenedProject.current) {
+      lastOpenedProject.current = pendingProject;
+      if (pendingProject) {
+        takePendingProject();
+        importProjectRef.current?.(pendingProject);
+      }
+    }
+  }, [pendingProject, takePendingProject]);
+
   // Functions
   const reset = () => {
     // Stop any in-flight generation so late websocket events can't mutate
@@ -268,6 +369,12 @@ function App() {
     resetHead();
     resetPromptAssets();
 
+    // A project opened from the projects page is handed over rather than
+    // loaded directly, because that page is a sibling of this one. Any of it
+    // still waiting here belongs to the run being abandoned, and importing it
+    // a moment later would put the old project straight back into the editor.
+    takePendingProject();
+
     // Inputs
     setInputMode("image");
     setReferenceImages([]);
@@ -277,8 +384,13 @@ function App() {
    * "New project" from the icon strip. Unlike `reset`, this also tears down an
    * in-flight clone and clears its progress panel, so the start pane comes up
    * clean instead of showing a frozen spinner from the abandoned run.
+   *
+   * Leaving the projects page is part of it. The page covers the app while it
+   * is open, so resetting the store behind it looks like the button did
+   * nothing at all - the start pane is there, just out of sight.
    */
   const startNewProject = () => {
+    setIsProjectsPageOpen(false);
     urlToCodeRef.current?.();
     reset();
   };
@@ -303,7 +415,7 @@ function App() {
     }
 
     if (currentCommit.type === "code_create") {
-      toast.error("Imported code cannot be regenerated.");
+      regenerateClonePage(currentCommit);
       return;
     }
 
@@ -774,6 +886,74 @@ function App() {
   };
 
   /**
+   * Generate one page of a finished clone again.
+   *
+   * A clone's pages arrive as `code_create` commits and used to be a dead end
+   * for regeneration: the run that produced them lived only inside the
+   * websocket that had already closed. The backend keeps the run - the crawl
+   * and every page it generated - so one page can be rebuilt from the original
+   * markup without crawling the site or paying for the other pages again.
+   */
+  async function regenerateClonePage(commit: Commit) {
+    const runId = useCloneStore.getState().runId;
+    if (!runId) {
+      toast.error(
+        "This clone's run is no longer on the server, so it cannot be regenerated. Clone the site again.",
+        { duration: 6000 }
+      );
+      return;
+    }
+
+    const path = pagePathForLabel(commit.label);
+    if (!path) {
+      toast.error(
+        "This page is not a crawled page of the clone, so it cannot be regenerated."
+      );
+      return;
+    }
+
+    // An edit typed into the prompt box turns a regeneration into a repair:
+    // the model is shown the page as it stands and asked for that change
+    // specifically, instead of a fresh page that discards the user's work.
+    const instruction = useAppStore.getState().updateInstruction.trim();
+    toast.loading(
+      instruction ? `Fixing ${path}...` : `Regenerating ${path}...`,
+      { id: REGENERATE_TOAST_ID }
+    );
+
+    try {
+      const code = await regeneratePage({
+        runId,
+        path,
+        settings,
+        instruction: instruction || undefined,
+        stack: useCloneStore.getState().cloneStack,
+      });
+      // The page is one file of the project, so its new code lands as an
+      // override on top of the commit: the rest of the clone is untouched and
+      // the page switcher keeps its shape. The key is the project file path,
+      // not the route, which is what the editor and the ZIP both use.
+      const codeMap = buildCodeMapFromCommits(useProjectStore.getState().commits);
+      const filePath = projectFileForPage(codeMap, path);
+      if (!filePath) {
+        toast.error(`Could not work out which file holds ${path}.`, {
+          id: REGENERATE_TOAST_ID,
+        });
+        return;
+      }
+      setFileOverride(filePath, code);
+      setUpdateInstruction("");
+      toast.success(`Regenerated ${path}.`, { id: REGENERATE_TOAST_ID });
+    } catch (error) {
+      // The server says what the provider objected to (a bad key, a retired
+      // model, a rate limit); repeating that beats a generic failure.
+      const message =
+        error instanceof Error ? error.message : "The page could not be regenerated.";
+      toast.error(message, { id: REGENERATE_TOAST_ID, duration: 6000 });
+    }
+  }
+
+  /**
    * Turns a completed clone into one version per generated page.
    *
    * The portal/landing page comes first and becomes the visible head; every
@@ -842,6 +1022,18 @@ function App() {
     appState === AppState.CODING || appState === AppState.CODE_READY;
   const showMobileChatPane = showContentPanel && mobilePane === "chat";
 
+  // Reading from IndexedDB is a round trip; show nothing rather than the start
+  // screen for the few frames it takes.
+  if (!isProjectRestored) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-canvas text-foreground">
+        <span className="font-mono text-xs text-muted-foreground">
+          Restoring project…
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`bg-canvas text-foreground ${
@@ -857,27 +1049,38 @@ function App() {
         />
       )}
 
-      {/* Icon strip - always visible */}
+      {/* One sign-in dialog for the whole app. The clone pane and the icon
+          strip both open it, so it cannot live inside either of them. */}
+      {isSignInOpen && <SignInDialog onSignedIn={closeSignIn} />}
+      {isAdminOpen && <AdminDialog onClose={closeAdmin} />}      {/* Icon strip - always visible */}
       <div
         className="sticky top-0 z-50 lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-16 lg:flex-col"
       >
         <IconStrip
           isHistoryOpen={isHistoryOpen}
-          isEditorOpen={!isHistoryOpen && !isSettingsOpen}
+          isEditorOpen={!isHistoryOpen && !isSettingsOpen && !isProjectsPageOpen}
           isSettingsOpen={isSettingsOpen}
           showHistory={isCodingOrReady}
           showEditor={isCodingOrReady}
+          isProjectsOpen={isProjectsPageOpen}
+          onToggleProjects={() => {
+            setIsProjectsPageOpen((prev) => !prev);
+            setIsHistoryOpen(false);
+            setIsSettingsOpen(false);
+          }}
           onToggleHistory={() => {
             setIsHistoryOpen((prev) => !prev);
             setIsSettingsOpen(false);
             setMobilePane("chat");
           }}
           onToggleEditor={() => {
+            setIsProjectsPageOpen(false);
             setIsHistoryOpen(false);
             setIsSettingsOpen(false);
             setMobilePane("preview");
           }}
           onLogoClick={() => {
+            setIsProjectsPageOpen(false);
             setIsHistoryOpen(false);
             setIsSettingsOpen(false);
             setMobilePane("preview");
@@ -1011,22 +1214,36 @@ function App() {
           />
         ) : (
           <>
-            {appState === AppState.INITIAL && (
-              <StartPane
-                startCrawl={urlToCode.startCrawl}
-                cancelCrawl={urlToCode.cancelCrawl}
-                state={urlToCode.state}
-                settings={settings}
-                setSettings={setSettings}
+            {isProjectsPageOpen && (
+              <ProjectsPage
+                onOpened={() => setIsProjectsPageOpen(false)}
+                // The button promises to go and clone something, so it has
+                // to leave this page behind - closing it on its own would
+                // drop somebody back onto the project they came to leave.
+                onGoToClone={() => startNewProject()}
               />
             )}
 
-            {isCodingOrReady && (
+            {!isProjectsPageOpen && appState === AppState.INITIAL && (
+              <StartPane
+                startCrawl={urlToCode.startCrawl}
+                cancelCrawl={urlToCode.cancelCrawl}
+                choosePages={urlToCode.choosePages}
+                state={urlToCode.state}
+                settings={settings}
+              />
+            )}
+
+            {!isProjectsPageOpen && isCodingOrReady && (
               <PreviewPane
                 settings={settings}
                 onOpenVersions={() => {
                   setIsHistoryOpen(true);
                   setMobilePane("chat");
+                }}
+                onRegeneratePage={() => {
+                  const commit = head ? commits[head] : undefined;
+                  if (commit) void regenerateClonePage(commit);
                 }}
               />
             )}

@@ -106,7 +106,7 @@ const TermsOfServiceDialog: React.FC<{
               />
             ))}
           </div>
-          <div className="text-gray-500 text-xs mt-4 text-center">
+          <div className="text-muted-foreground text-xs mt-4 text-center">
             Designers and engineers from these organizations use Screenshot to
             Code to build interfaces faster.
           </div>

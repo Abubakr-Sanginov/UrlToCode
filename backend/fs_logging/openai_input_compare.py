@@ -229,12 +229,3 @@ def format_openai_input_comparison(comparison: OpenAIInputComparison) -> str:
         ]
     )
     return "\n".join(lines)
-
-
-def compare_openai_input_json_strings(
-    left_json: str,
-    right_json: str,
-) -> OpenAIInputComparison:
-    left_payload = json.loads(left_json)
-    right_payload = json.loads(right_json)
-    return compare_openai_inputs(left_payload, right_payload)

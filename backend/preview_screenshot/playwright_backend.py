@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from preview_screenshot.base import VIEWPORT_SIZES
 
@@ -53,10 +53,27 @@ class PlaywrightBackend:
     ) -> bytes:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        browser = await self._get_browser()
         width, height = VIEWPORT_SIZES.get(device, VIEWPORT_SIZES["desktop"])
+        return await self.capture_at_width(html, width, height, full_page)
+
+    async def capture_at_width(
+        self,
+        html: str,
+        width: int,
+        height: int = 768,
+        full_page: bool = True,
+    ) -> bytes:
+        """Render at an exact viewport, for comparing against a fixed capture.
+
+        The named devices exist for a rough preview. A pixel comparison is only
+        meaningful at the width the original was captured at, so the visual
+        check passes its own size rather than asking for the nearest preset.
+        """
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        browser = await self._get_browser()
         page = await browser.new_page(
-            viewport={"width": width, "height": height},
+            viewport={"width": max(1, width), "height": max(1, height)},
             device_scale_factor=1,
         )
         try:

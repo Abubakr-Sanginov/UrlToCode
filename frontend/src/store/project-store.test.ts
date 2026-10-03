@@ -1,6 +1,6 @@
 import { Commit, VariantStatus } from "../components/commits/types";
 import { useAppStore } from "./app-store";
-import { useProjectStore } from "./project-store";
+import { reconcileRestoredProject, useProjectStore } from "./project-store";
 
 function createGeneratingCommit(): Commit {
   return {
@@ -84,4 +84,122 @@ describe("variant completion timestamps", () => {
       ).toBe(116_000);
     }
   );
+});
+
+describe("project restore", () => {
+  const current = () => useProjectStore.getState();
+
+  it("keeps stored commits and revives dates into real Date objects", () => {
+    const restored = reconcileRestoredProject(
+      {
+        commits: {
+          "/": {
+            hash: "/",
+            parentHash: null,
+            dateCreated: "2026-09-27T08:05:12.000Z",
+            isCommitted: true,
+            type: "code_create",
+            inputs: null,
+            label: "/",
+            selectedVariantIndex: 0,
+            variants: [{ code: "<html></html>", history: [], status: "complete" }],
+          },
+        },
+        head: "/",
+        latestCommitHash: "/",
+      },
+      current()
+    );
+
+    expect(Object.keys(restored.commits)).toEqual(["/"]);
+    expect(restored.commits["/"].dateCreated).toBeInstanceOf(Date);
+    expect(restored.commits["/"].dateCreated.toISOString()).toBe(
+      "2026-09-27T08:05:12.000Z"
+    );
+    expect(restored.head).toBe("/");
+  });
+
+  it("marks a generation that was still streaming as an error, not a spinner", () => {
+    const restored = reconcileRestoredProject(
+      {
+        commits: {
+          c1: {
+            hash: "c1",
+            dateCreated: 1_000,
+            variants: [
+              {
+                code: "<html>",
+                status: "generating",
+                thinkingStartTime: 1_000,
+              },
+            ],
+          },
+        },
+        head: "c1",
+      },
+      current()
+    );
+
+    const variant = restored.commits["c1"].variants[0];
+    expect(variant.status).toBe("error");
+    expect(variant.errorMessage).toMatch(/reloaded/i);
+    expect(variant.thinkingStartTime).toBeUndefined();
+    // The partial code that did arrive is still there to look at.
+    expect(variant.code).toBe("<html>");
+  });
+
+  it("drops a head that no longer resolves to a commit", () => {
+    const restored = reconcileRestoredProject(
+      {
+        commits: {
+          c1: { hash: "c1", dateCreated: 1_000, variants: [{ code: "a" }] },
+        },
+        head: "gone",
+        latestCommitHash: "gone",
+      },
+      current()
+    );
+
+    expect(restored.head).toBeNull();
+    expect(restored.latestCommitHash).toBeNull();
+    expect(Object.keys(restored.commits)).toEqual(["c1"]);
+  });
+
+  it("survives junk on disk without throwing", () => {
+    // Start from a clean project so leftovers from earlier cases cannot
+    // masquerade as restored state.
+    useProjectStore.setState({ commits: {}, head: null, latestCommitHash: null });
+    const clean = useProjectStore.getState();
+
+    for (const junk of [
+      null,
+      "nope",
+      42,
+      { commits: "bad" },
+      { commits: { a: {} } },
+      { commits: { a: { hash: "a", variants: [] } } },
+    ]) {
+      const restored = reconcileRestoredProject(junk, clean);
+      expect(restored.commits).toEqual({});
+      expect(restored.head).toBeNull();
+    }
+  });
+
+  it("clamps a selected variant index that points past the variant list", () => {
+    const restored = reconcileRestoredProject(
+      {
+        commits: {
+          c1: {
+            hash: "c1",
+            dateCreated: 1_000,
+            selectedVariantIndex: 7,
+            variants: [{ code: "a" }, { code: "b" }],
+          },
+        },
+      },
+      current()
+    );
+
+    expect(restored.commits["c1"].selectedVariantIndex).toBe(1);
+  });
 });

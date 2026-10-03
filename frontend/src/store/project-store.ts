@@ -1,12 +1,15 @@
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import {
   AgentEvent,
   Commit,
   CommitHash,
+  Variant,
   VariantHistoryMessage,
   VariantStatus,
 } from "../components/commits/types";
 import { PromptAsset } from "../types";
+import { createIdbStorage } from "../lib/idbStorage";
 import { useAppStore } from "./app-store";
 
 // Store for app-wide state
@@ -78,12 +81,131 @@ interface ProjectStore {
   setHead: (hash: CommitHash) => void;
   resetHead: () => void;
 
+  /**
+   * Hand edits made in the code editor, keyed by the project-file path the
+   * editor showed. The generated code in `commits` stays untouched so the
+   * original generation and any AI edit still have a clean base; the editor,
+   * the preview and every export read the override on top of it.
+   */
+  fileOverrides: Record<string, string>;
+  setFileOverride: (path: string, content: string) => void;
+  clearFileOverride: (path: string) => void;
+  resetFileOverrides: () => void;
+
   executionConsoles: { [key: number]: string[] };
   appendExecutionConsole: (variantIndex: number, line: string) => void;
   resetExecutionConsoles: () => void;
 }
 
-export const useProjectStore = create<ProjectStore>((set, get) => ({
+/**
+ * A generation that was still streaming when the tab closed cannot resume —
+ * there is no socket to receive the rest of it. Restoring it as "generating"
+ * would leave a spinner that never resolves, so it comes back as an error the
+ * user can retry from.
+ */
+const INTERRUPTED_MESSAGE =
+  "Interrupted: the page was reloaded while this was still generating.";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** Make a restored commit safe to render: real dates, no stalled spinners. */
+function reviveCommit(value: unknown): Commit | null {
+  if (!isRecord(value) || typeof value.hash !== "string") return null;
+  if (!Array.isArray(value.variants)) return null;
+
+  const variants = value.variants
+    .filter(isRecord)
+    .map((variant) => {
+      const wasGenerating = variant.status === "generating";
+      return {
+        ...variant,
+        code: typeof variant.code === "string" ? variant.code : "",
+        history: Array.isArray(variant.history) ? variant.history : [],
+        agentEvents: Array.isArray(variant.agentEvents) ? variant.agentEvents : [],
+        status: wasGenerating ? ("error" as VariantStatus) : variant.status,
+        errorMessage: wasGenerating ? INTERRUPTED_MESSAGE : variant.errorMessage,
+        // A stale start time would keep a "thinking" timer running forever.
+        thinkingStartTime: wasGenerating ? undefined : variant.thinkingStartTime,
+      } as Variant;
+    });
+  if (variants.length === 0) return null;
+
+  return {
+    ...(value as unknown as Commit),
+    dateCreated: new Date(
+      typeof value.dateCreated === "string" || typeof value.dateCreated === "number"
+        ? value.dateCreated
+        : 0
+    ),
+    variants,
+    selectedVariantIndex: Math.max(
+      0,
+      Math.min(
+        typeof value.selectedVariantIndex === "number"
+          ? value.selectedVariantIndex
+          : 0,
+        variants.length - 1
+      )
+    ),
+  };
+}
+
+export function reconcileRestoredProject(
+  persisted: unknown,
+  current: ProjectStore
+): ProjectStore {
+  if (!isRecord(persisted)) return current;
+
+  const rawCommits = isRecord(persisted.commits) ? persisted.commits : {};
+  const commits: Record<string, Commit> = {};
+  for (const entry of Object.values(rawCommits)) {
+    const commit = reviveCommit(entry);
+    if (commit) commits[commit.hash] = commit;
+  }
+
+  // A head that no longer exists would leave every view reading an undefined
+  // commit; fall back to the newest one that does.
+  const requestedHead =
+    typeof persisted.head === "string" ? persisted.head : null;
+  const head = requestedHead && commits[requestedHead] ? requestedHead : null;
+  const latest =
+    typeof persisted.latestCommitHash === "string" &&
+    commits[persisted.latestCommitHash]
+      ? persisted.latestCommitHash
+      : null;
+
+  const inputMode: ProjectStore["inputMode"] =
+    persisted.inputMode === "image" ||
+    persisted.inputMode === "video" ||
+    persisted.inputMode === "text"
+      ? persisted.inputMode
+      : current.inputMode;
+
+  return {
+    ...current,
+    inputMode,
+    referenceImages: Array.isArray(persisted.referenceImages)
+      ? (persisted.referenceImages as string[])
+      : current.referenceImages,
+    initialPrompt:
+      typeof persisted.initialPrompt === "string"
+        ? persisted.initialPrompt
+        : current.initialPrompt,
+    assetsById: isRecord(persisted.assetsById)
+      ? (persisted.assetsById as Record<string, PromptAsset>)
+      : current.assetsById,
+    commits,
+    head,
+    latestCommitHash: latest,
+    fileOverrides: isRecord(persisted.fileOverrides)
+      ? (persisted.fileOverrides as Record<string, string>)
+      : current.fileOverrides,
+  };
+}
+
+const projectStoreCreator: StateCreator<ProjectStore> = (set, get) => ({
   // Inputs and their setters
   inputMode: "image",
   setInputMode: (mode) => set({ inputMode: mode }),
@@ -458,6 +580,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   },
   resetHead: () => set({ head: null }),
 
+  fileOverrides: {},
+  setFileOverride: (path, content) =>
+    set((state) => ({ fileOverrides: { ...state.fileOverrides, [path]: content } })),
+  clearFileOverride: (path) =>
+    set((state) => {
+      if (!(path in state.fileOverrides)) return state;
+      const next = { ...state.fileOverrides };
+      delete next[path];
+      return { fileOverrides: next };
+    }),
+  resetFileOverrides: () => set({ fileOverrides: {} }),
+
   executionConsoles: {},
   appendExecutionConsole: (variantIndex: number, line: string) =>
     set((state) => ({
@@ -470,4 +604,29 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       },
     })),
   resetExecutionConsoles: () => set({ executionConsoles: {} }),
-}));
+});
+
+/**
+ * The whole generated project lives here, so it is persisted: a clone of a
+ * thirty-page site takes tens of minutes and must survive a reload.
+ */
+export const useProjectStore = create<ProjectStore>()(
+  persist(projectStoreCreator, {
+    name: "project",
+    version: 1,
+    storage: createJSONStorage(() => createIdbStorage()),
+    // Actions are dropped by JSON serialisation, and the execution console is
+    // per-run output that would only rehydrate as stale noise.
+    partialize: (state) => ({
+      inputMode: state.inputMode,
+      referenceImages: state.referenceImages,
+      initialPrompt: state.initialPrompt,
+      assetsById: state.assetsById,
+      commits: state.commits,
+      head: state.head,
+      latestCommitHash: state.latestCommitHash,
+      fileOverrides: state.fileOverrides,
+    }),
+    merge: reconcileRestoredProject,
+  })
+);

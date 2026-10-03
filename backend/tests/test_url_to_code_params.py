@@ -54,6 +54,27 @@ def test_normalize_stack(raw: object, expected: str) -> None:
     assert _normalize_stack(raw) == expected
 
 
+@pytest.fixture(autouse=True)
+def no_keys_in_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about what the request carries, not about .env.
+
+    They read the configured keys as a fallback, so on a machine with a
+    .env of its own "no key was sent" quietly became "the environment
+    supplied one" and the assertion below stopped meaning anything.
+    """
+    import routes.url_to_code as url_to_code
+
+    for name in (
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.setattr(url_to_code, name, None, raising=False)
+
+
 def test_provider_precedence_matches_documented_order() -> None:
     everything = UrlToCodeParams(
         url="https://example.com",

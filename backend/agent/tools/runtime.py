@@ -1,7 +1,7 @@
 # pyright: reportUnknownVariableType=false
 import asyncio
 import difflib
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from codegen.utils import extract_html_content
 from config import REPLICATE_API_KEY

@@ -120,6 +120,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# Finished clones and the project files built from them. Runtime output, not
+# source: it grows without bound, and on a shared machine it is somebody's
+# work rather than this repository's. The directory is recreated on the next
+# run, and accounts keep their rows in the database either way.
+clone_runs/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -161,3 +167,9 @@ video_evals
 
 # Sites saved by the "open folder & run" feature
 generated_sites/
+
+# Accounts: email addresses and password hashes. Never committed.
+data/
+*.db
+*.db-wal
+*.db-shm

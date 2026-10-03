@@ -1,21 +1,20 @@
 import React from "react";
 import { Settings } from "../../types";
-import { Stack, STACK_DESCRIPTIONS } from "../../lib/stacks";
+import { CloneStack, NEXTJS_STACK, Stack, cloneStackLabel } from "../../lib/stacks";
 import UrlToCodePane from "../url-to-code/UrlToCodePane";
 import { CrawlRunState, StartCrawlParams } from "../../hooks/useUrlToCode";
 import {
   LuGlobe2,
   LuFolderOpen,
   LuSparkles,
-  LuZap,
 } from "react-icons/lu";
 
 interface Props {
   startCrawl: (params: StartCrawlParams) => void;
   cancelCrawl: () => void;
+  choosePages: (paths: string[]) => void;
   state: CrawlRunState;
   settings: Settings;
-  setSettings: React.Dispatch<React.SetStateAction<Settings>>;
 }
 
 const FEATURES = [
@@ -36,40 +35,36 @@ const FEATURES = [
   },
 ] as const;
 
-const stackNames = Object.values(Stack)
-  .slice(0, 5)
-  .map((stack) => STACK_DESCRIPTIONS[stack].components.join(" + "));
+const stackNames: string[] = ([NEXTJS_STACK, ...Object.values(Stack)] as CloneStack[])
+  .slice(0, 6)
+  .map((stack) => cloneStackLabel(stack));
 
 const StartPane: React.FC<Props> = ({
   startCrawl,
   cancelCrawl,
+  choosePages,
   state,
   settings,
-  setSettings,
 }) => {
-  function setStack(stack: Stack) {
-    setSettings((prev: Settings) => ({
-      ...prev,
-      generatedCodeConfig: stack,
-    }));
-  }
-
   return (
     <div className="relative flex flex-1 flex-col items-center overflow-y-auto px-4 py-10 sm:py-14">
-      {/* Ambient background glow */}
+      {/* Ambient background: a faint green terminal glow from the top */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(ellipse_at_top,hsl(var(--brand)/0.10),transparent_65%)]"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(ellipse_at_top,hsl(var(--brand)/0.07),transparent_65%)]"
       />
 
       <div className="relative flex w-full max-w-2xl flex-col items-center">
         {/* Hero */}
         <div className="flex flex-col items-center text-center">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-brand-border bg-brand-subtle px-3 py-1 text-xs font-medium text-brand">
-            <LuZap className="h-3 w-3" aria-hidden="true" />
-            URL → code, fully automatic
-          </div>
-          <h1 className="bg-gradient-to-br from-foreground via-foreground to-brand bg-clip-text text-4xl font-bold tracking-tight text-transparent sm:text-5xl">
+          <p
+            aria-hidden="true"
+            className="mb-4 font-mono text-sm text-brand"
+          >
+            <span className="text-muted-foreground">$</span> url --to-code
+            <span className="caret-block" />
+          </p>
+          <h1 className="text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
             Clone any website
           </h1>
           <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground sm:text-base">
@@ -81,10 +76,9 @@ const StartPane: React.FC<Props> = ({
         {/* Clone card */}
         <div className="mt-8 w-full">
           <UrlToCodePane
-            stack={settings.generatedCodeConfig}
-            setStack={setStack}
             startCrawl={startCrawl}
             cancelCrawl={cancelCrawl}
+            choosePages={choosePages}
             state={state}
             settings={settings}
           />
@@ -95,13 +89,13 @@ const StartPane: React.FC<Props> = ({
           {FEATURES.map((feature, index) => (
             <div
               key={feature.title}
-              className="rounded-xl border border-border bg-card/60 p-4 shadow-card backdrop-blur-sm"
+              className="rounded-lg border border-border bg-card p-4"
             >
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand">
+              <div className="flex items-center justify-between">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-canvas text-muted-foreground">
                   <feature.icon className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
-                <span className="text-xs font-semibold tabular-nums text-muted-foreground/60">
+                <span className="font-mono text-xs tabular-nums text-brand">
                   0{index + 1}
                 </span>
               </div>
@@ -117,13 +111,10 @@ const StartPane: React.FC<Props> = ({
 
         {/* Stack chips */}
         <div className="mt-8 flex flex-wrap items-center justify-center gap-1.5">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground/70">
-            Stacks
-          </span>
           {stackNames.map((name) => (
             <span
               key={name}
-              className="rounded-full border border-border bg-card px-2.5 py-0.5 text-[11px] text-muted-foreground"
+              className="rounded border border-border bg-card px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
             >
               {name}
             </span>

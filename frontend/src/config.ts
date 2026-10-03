@@ -20,3 +20,12 @@ export const HTTP_BACKEND_URL =
 
 export const PICO_BACKEND_FORM_SECRET =
   import.meta.env.VITE_PICO_BACKEND_FORM_SECRET || null;
+
+// Where the backend serves the images and videos it captured while crawling,
+// and the screenshots it renders when checking a clone. Mirrors
+// MEDIA_ROUTE in backend/crawler/media_store.py.
+export const MEDIA_ROUTE = "/crawl-assets";
+
+export function mediaUrl(name: string): string {
+  return `${HTTP_BACKEND_URL}${MEDIA_ROUTE}/${name}`;
+}

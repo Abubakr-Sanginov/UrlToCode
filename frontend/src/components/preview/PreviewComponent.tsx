@@ -22,7 +22,7 @@ interface Props {
 }
 
 const MOBILE_VIEWPORT_WIDTH = 375;
-export const DESKTOP_VIEWPORT_WIDTH = 1366;
+const DESKTOP_VIEWPORT_WIDTH = 1366;
 
 function PreviewComponent({
   code,

@@ -16,6 +16,22 @@ module.exports = {
       },
     },
     extend: {
+      fontFamily: {
+        sans: [
+          '"IBM Plex Sans"',
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "sans-serif",
+        ],
+        mono: [
+          '"JetBrains Mono"',
+          '"Fira Code"',
+          '"SF Mono"',
+          "Consolas",
+          "monospace",
+        ],
+      },
       colors: {
         // Page background, one step behind `card`, so raised surfaces read
         // without needing a shadow.
@@ -82,15 +98,17 @@ module.exports = {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        xl: "calc(var(--radius) + 4px)",
+        "2xl": "calc(var(--radius) + 8px)",
       },
       boxShadow: {
-        // Tight, low-opacity elevation. Enough to lift a card off the canvas
-        // without the heavy drop shadows the old surfaces used.
-        card: "0 1px 2px 0 hsl(222 30% 12% / 0.04), 0 1px 3px 0 hsl(222 30% 12% / 0.06)",
+        // Dark-first surfaces lean on borders for elevation; shadows stay
+        // subtle enough to work on both the dark and the light canvas.
+        card: "0 1px 2px 0 hsl(222 47% 5% / 0.12), 0 1px 3px 0 hsl(222 47% 5% / 0.1)",
         raised:
-          "0 2px 4px -1px hsl(222 30% 12% / 0.06), 0 4px 12px -2px hsl(222 30% 12% / 0.08)",
+          "0 2px 4px -1px hsl(222 47% 5% / 0.15), 0 6px 16px -2px hsl(222 47% 5% / 0.18)",
         overlay:
-          "0 4px 8px -2px hsl(222 30% 12% / 0.08), 0 12px 28px -6px hsl(222 30% 12% / 0.14)",
+          "0 4px 8px -2px hsl(222 47% 5% / 0.18), 0 16px 32px -6px hsl(222 47% 5% / 0.28)",
       },
       keyframes: {
         "accordion-down": {

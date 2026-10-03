@@ -1,18 +1,17 @@
 """The crawl loop itself, driven against a local site.
 
 Everything else about the crawler is tested through pure helpers; this is the
-part that only breaks in a real browser: following links, staying on the page
-while clicking, and capturing what a search reveals.
+part that only breaks in a real browser: following internal links, capturing
+exactly the page that was queued, and never interacting with the site.
 
 Needs Chromium, so it is skipped where Playwright is not installed. Mark:
 `pytest -m browser` to run only these, `-m "not browser"` to skip them.
 """
 
 import asyncio
-import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, cast
 
 import pytest
 
@@ -88,7 +87,12 @@ def site() -> Iterator[str]:
 
 
 def _crawl(url: str, **kwargs: Any) -> List[Dict[str, Any]]:
-    return asyncio.run(
+    return _crawl_result(url, **kwargs)["pages"]
+
+
+def _crawl_result(url: str, **kwargs: Any) -> Dict[str, Any]:
+    """The whole worker answer, pages and captured API together."""
+    result = asyncio.run(
         worker.crawl(
             url,
             kwargs.pop("max_pages", 3),
@@ -98,6 +102,7 @@ def _crawl(url: str, **kwargs: Any) -> List[Dict[str, Any]]:
             **kwargs,
         )
     )
+    return cast(Dict[str, Any], result)
 
 
 def test_the_crawl_follows_internal_links_only(site: str) -> None:
@@ -109,36 +114,18 @@ def test_the_crawl_follows_internal_links_only(site: str) -> None:
     assert all("example.org" not in link for link in home["links"])
 
 
-def test_clicking_never_leaves_the_page_being_captured(site: str) -> None:
-    """A JavaScript redirect used to be captured under the original URL."""
+def test_the_capture_describes_the_page_itself(site: str) -> None:
+    """The crawl never clicks, so a JS redirect cannot poison the capture.
+
+    This used to matter because the crawler clicked buttons and tabs; the
+    capture now describes the queued URL by construction, and this test pins
+    that contract: the "Sign in" button's target page must never leak in.
+    """
     pages = _crawl(site, max_pages=1)
 
     home = next(p for p in pages if p["path"] == "/")
     assert home["title"] == "Fixture home"
     assert "Sign in</h1>" not in home["html"]
-
-
-def test_search_results_are_captured_as_their_own_page(
-    site: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Results render in place here, so no URL change signals success."""
-
-    async def fake_llm(_config: Dict[str, Any], _prompt: str) -> Optional[str]:
-        return json.dumps(
-            {"actions": [{"type": "type", "selector": "#q", "value": "widgets"}]}
-        )
-
-    monkeypatch.setattr(worker, "_call_llm", fake_llm)
-
-    pages = _crawl(
-        site,
-        max_pages=4,
-        llm_config={"provider": "openrouter", "api_key": "test-key"},
-    )
-
-    search_pages = [p for p in pages if "search=widgets" in p["path"]]
-    assert search_pages, [p["path"] for p in pages]
-    assert "Result 1 for widgets" in search_pages[0]["html"]
 
 
 def test_a_crawl_past_its_budget_returns_what_it_has(site: str) -> None:

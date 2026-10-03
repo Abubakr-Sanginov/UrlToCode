@@ -15,6 +15,7 @@ def build_update_prompt_from_file_snapshot(
     file_state: dict[str, str],
     image_generation_enabled: bool,
     design_system: str | None = None,
+    attached_pages_block: str | None = None,
 ) -> Prompt:
     path = file_state.get("path", "index.html")
     # full_text carries the complete model-facing instruction (e.g. with the
@@ -42,6 +43,8 @@ You are editing an existing file.
 <change_request>
 {request_text}
 </change_request>"""
+    if attached_pages_block:
+        bootstrap_text = f"{bootstrap_text}\n\n{attached_pages_block}"
     return [
         cast(
             ChatCompletionMessageParam,

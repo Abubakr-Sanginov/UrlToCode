@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import toast from "react-hot-toast";
 import { BsCheckCircleFill, BsExclamationTriangleFill } from "react-icons/bs";
 import { AppTheme, EditorTheme, Settings } from "../../types";
 import { capitalize } from "../../lib/utils";
@@ -10,7 +11,14 @@ import {
   SelectTrigger,
 } from "../ui/select";
 import { Input } from "../ui/input";
+import { Button } from "../ui/button";
 import { HTTP_BACKEND_URL } from "../../config";
+import {
+  CloneCacheInfo,
+  clearCloneCache,
+  describeCacheSize,
+  fetchCloneCache,
+} from "../../lib/cloneCache";
 
 interface Props {
   settings: Settings;
@@ -93,11 +101,17 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  // The generation cache. Shown because a cache the user cannot see or
+  // empty is a cache that starts looking like the tool is wrong: the same
+  // site producing a different page needs an explanation they can act on.
+  const [pageCache, setPageCache] = useState<CloneCacheInfo | null>(null);
+  const [isClearingCache, setIsClearingCache] = useState(false);
 
   const ids = useId();
   const listboxId = `${ids}-model-listbox`;
   const openRouterKeyId = `${ids}-openrouter-key`;
   const modelSearchId = `${ids}-model-search`;
+  const reasoningEffortId = `${ids}-reasoning-effort`;
   const anthropicKeyId = `${ids}-anthropic-key`;
   const openAiKeyId = `${ids}-openai-key`;
   const geminiKeyId = `${ids}-gemini-key`;
@@ -146,10 +160,67 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
   }, []);
 
   useEffect(() => {
-    if (showModelDropdown && inputRef.current) {
+    let cancelled = false;
+    fetchCloneCache()
+      .then((info) => {
+        if (!cancelled) setPageCache(info);
+      })
+      .catch(() => {
+        // A backend that has never been asked for a cache still answers
+        // with an empty one, so a failure here means the endpoint is not
+        // there. Nothing about the rest of Settings depends on it.
+        if (!cancelled) setPageCache(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function emptyPageCache() {
+    setIsClearingCache(true);
+    try {
+      const result = await clearCloneCache();
+      setPageCache((previous) => ({
+        ...(previous ?? { entries: 0, bytes: 0, oldest: 0, directory: "" }),
+        entries: 0,
+        bytes: 0,
+        oldest: 0,
+      }));
+      toast.success(
+        result.removed
+          ? `Cleared ${result.removed} cached page${result.removed === 1 ? "" : "s"}.`
+          : "The cache was already empty."
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The cache could not be cleared.",
+        { duration: 6000 }
+      );
+    } finally {
+      setIsClearingCache(false);
+    }
+  }
+
+  // The list is fixed-positioned in a portal, so it has to follow the input
+  // whenever the panel scrolls or the layout moves; measuring once on open
+  // left it hanging far below the field.
+  useEffect(() => {
+    if (!showModelDropdown) return;
+    function place() {
+      if (!inputRef.current) return;
       const rect = inputRef.current.getBoundingClientRect();
       setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
     }
+    place();
+    // Capture: scrolling happens in an inner container, which never bubbles.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    const frame = window.setInterval(place, 250);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+      window.clearInterval(frame);
+    };
   }, [showModelDropdown]);
 
   async function searchOpenRouterModels(query: string) {
@@ -502,6 +573,31 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
                       document.body
                     )}
                   </div>
+
+                  <label htmlFor={reasoningEffortId} className={`${FIELD_LABEL} mt-4`}>
+                    Reasoning
+                  </label>
+                  <p className={FIELD_HINT}>
+                    A reasoning model can spend its whole budget thinking and
+                    return no page at all. Setting this to Low is what makes
+                    those models usable here.
+                  </p>
+                  <select
+                    id={reasoningEffortId}
+                    className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                    value={settings.reasoningEffort || ""}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        reasoningEffort: e.target.value || null,
+                      }))
+                    }
+                  >
+                    <option value="">Provider default</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
                 </div>
               )}
             </div>
@@ -713,6 +809,56 @@ function SettingsTab({ settings, setSettings, appTheme, setAppTheme }: Props) {
               ) : (
                 <p className="text-xs text-muted-foreground">Checking...</p>
               )}
+            </div>
+          </div>
+
+          {/* Generation cache */}
+          <div className={CARD}>
+            <div className={CARD_HEADER}>
+              <h2 className={CARD_TITLE}>Generated page cache</h2>
+              <p className={CARD_SUBTITLE}>
+                Cloning the same site again reuses pages already generated
+              </p>
+            </div>
+            <div className="p-4">
+              {pageCache === null ? (
+                <p className="text-xs text-muted-foreground">Checking...</p>
+              ) : pageCache.entries === 0 ? (
+                <div className="flex items-center gap-2.5">
+                  <BsCheckCircleFill
+                    className="shrink-0 text-success"
+                    aria-hidden="true"
+                  />
+                  <p className="text-sm text-foreground">
+                    Nothing cached — every page is generated from scratch
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-sm text-foreground">
+                    {pageCache.entries} page{pageCache.entries === 1 ? "" : "s"} kept
+                    {pageCache.oldest
+                      ? ` · oldest ${new Date(pageCache.oldest * 1000).toLocaleDateString()}`
+                      : ""}
+                    {` · ${describeCacheSize(pageCache.bytes)}`}
+                  </p>
+                  <Button
+                    onClick={() => void emptyPageCache()}
+                    variant="outline"
+                    size="sm"
+                    disabled={isClearingCache}
+                    title="Generate every page from the site again next time, at full cost"
+                    className="gap-1.5 text-xs"
+                    data-testid="clear-page-cache"
+                  >
+                    {isClearingCache ? "Clearing..." : "Clear cache"}
+                  </Button>
+                </div>
+              )}
+              <p className="mt-2.5 text-xs leading-5 text-muted-foreground">
+                A cached page is reused only for the same site, page, stack, model
+                and prompt. Changing any of them generates it again.
+              </p>
             </div>
           </div>
         </div>

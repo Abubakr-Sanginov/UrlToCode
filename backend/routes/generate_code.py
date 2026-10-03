@@ -18,7 +18,9 @@ from config import (
     NUM_VARIANTS_VIDEO,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
+    OPENROUTER_API_KEY,
     REPLICATE_API_KEY,
+    SUPPORT_EMAIL,
 )
 from custom_types import InputMode
 from llm import (
@@ -72,6 +74,7 @@ from routes.model_choice_sets import (
     GEMINI_ONLY_MODELS,
     OPENAI_ANTHROPIC_MODELS,
     OPENAI_ONLY_MODELS,
+    OPENROUTER_MODELS as OPENROUTER_MODELS_LIST,
     VIDEO_VARIANT_MODELS,
 )
 
@@ -264,6 +267,7 @@ class ExtractedParams:
     history: List[PromptHistoryMessage]
     file_state: Dict[str, str] | None
     option_codes: List[str]
+    openrouter_api_key: str | None = None
     should_extract_assets: bool = True
     asset_base_url: str = ""
     design_system: str | None = None
@@ -311,6 +315,12 @@ class ParameterExtractionStage:
         )
         replicate_api_key = self._get_from_settings_dialog_or_env(
             params, "replicateApiKey", REPLICATE_API_KEY
+        )
+        # The clone path could always reach OpenRouter; the editor could
+        # not, so a project set up for it could clone a site and then not
+        # edit it.
+        openrouter_api_key = self._get_from_settings_dialog_or_env(
+            params, "openRouterApiKey", OPENROUTER_API_KEY
         )
 
         # Base URL for OpenAI API
@@ -381,6 +391,7 @@ class ParameterExtractionStage:
             anthropic_api_key=anthropic_api_key,
             gemini_api_key=gemini_api_key,
             replicate_api_key=replicate_api_key,
+            openrouter_api_key=openrouter_api_key,
             openai_base_url=openai_base_url,
             generation_type=generation_type,
             prompt=prompt,
@@ -420,6 +431,7 @@ class ModelSelectionStage:
         openai_api_key: str | None,
         anthropic_api_key: str | None,
         gemini_api_key: str | None = None,
+        openrouter_api_key: str | None = None,
     ) -> List[Llm]:
         """Select appropriate models based on available API keys"""
         try:
@@ -431,6 +443,7 @@ class ModelSelectionStage:
                 openai_api_key,
                 anthropic_api_key,
                 gemini_api_key,
+                openrouter_api_key,
             )
 
             # Print the variant models (one per line)
@@ -455,6 +468,7 @@ class ModelSelectionStage:
         openai_api_key: str | None,
         anthropic_api_key: str | None,
         gemini_api_key: str | None,
+        openrouter_api_key: str | None = None,
     ) -> List[Llm]:
         """Simple model cycling that scales with num_variants"""
 
@@ -467,8 +481,14 @@ class ModelSelectionStage:
                 )
             return list(VIDEO_VARIANT_MODELS)
 
+        # A project set up for OpenRouter edits with OpenRouter. It used to
+        # fall through to whichever other key happened to be in .env, so an
+        # edit could go to a provider that had been dead for months and
+        # report nothing useful when it failed.
+        if openrouter_api_key:
+            models = list(OPENROUTER_MODELS_LIST)
         # Define models based on available API keys
-        if gemini_api_key and anthropic_api_key and openai_api_key:
+        elif gemini_api_key and anthropic_api_key and openai_api_key:
             if input_mode == "text" and generation_type == "create":
                 models = list(ALL_KEYS_MODELS_TEXT_CREATE)
             elif generation_type == "update":
@@ -523,10 +543,16 @@ class PromptCreationStage:
             print_prompt_preview(prompt_messages)
 
             return prompt_messages
-        except Exception:
-            await self.throw_error(
-                "Error assembling prompt. Contact support at support@getwhimsyworks.com"
-            )
+        except Exception as exc:
+            # The cause is logged, never shown. The message used to name a
+            # support address that belonged to the project this was forked
+            # from, which sent users to somebody who cannot help them - and
+            # hid the only thing worth knowing, which is what broke.
+            print(f"[Prompt] Assembly failed: {type(exc).__name__}: {exc}")
+            detail = "Could not build the request for the model."
+            if SUPPORT_EMAIL:
+                detail += f" If this keeps happening, write to {SUPPORT_EMAIL}."
+            await self.throw_error(detail)
             raise
 
 
@@ -560,6 +586,7 @@ class AgenticGenerationStage:
         file_state: Dict[str, str] | None,
         asset_base_url: str,
         option_codes: List[str] | None,
+        openrouter_api_key: str | None = None,
         should_extract_assets: bool = True,
         generation_id: str | None = None,
         stack: str | None = None,
@@ -572,6 +599,7 @@ class AgenticGenerationStage:
         self.anthropic_api_key = anthropic_api_key
         self.gemini_api_key = gemini_api_key
         self.replicate_api_key = replicate_api_key
+        self.openrouter_api_key = openrouter_api_key
         self.should_generate_images = should_generate_images
         self.should_extract_assets = should_extract_assets
         self.file_state = file_state
@@ -647,6 +675,7 @@ class AgenticGenerationStage:
                 anthropic_api_key=self.anthropic_api_key,
                 gemini_api_key=self.gemini_api_key,
                 replicate_api_key=self.replicate_api_key,
+                openrouter_api_key=self.openrouter_api_key,
                 should_generate_images=self.should_generate_images,
                 should_extract_assets=self.should_extract_assets,
                 asset_base_url=self.asset_base_url,
@@ -814,6 +843,7 @@ class CodeGenerationMiddleware(Middleware):
                 openai_api_key=context.extracted_params.openai_api_key,
                 anthropic_api_key=context.extracted_params.anthropic_api_key,
                 gemini_api_key=context.extracted_params.gemini_api_key,
+                openrouter_api_key=context.extracted_params.openrouter_api_key,
             )
             if IS_DEBUG_ENABLED:
                 await context.send_message(
@@ -831,6 +861,7 @@ class CodeGenerationMiddleware(Middleware):
                 anthropic_api_key=context.extracted_params.anthropic_api_key,
                 gemini_api_key=context.extracted_params.gemini_api_key,
                 replicate_api_key=context.extracted_params.replicate_api_key,
+                openrouter_api_key=context.extracted_params.openrouter_api_key,
                 should_generate_images=context.extracted_params.should_generate_images,
                 should_extract_assets=context.extracted_params.should_extract_assets,
                 file_state=context.extracted_params.file_state,

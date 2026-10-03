@@ -1,7 +1,7 @@
 import os
 import asyncio
 import json
-from fastapi import APIRouter, Query, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from evals.utils import image_to_data_url

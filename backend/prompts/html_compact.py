@@ -40,15 +40,18 @@ _DROP_TAGS = (
 )
 
 # Tags that are meaningful even when they hold no text.
-_VOID_TAGS = frozenset({"img", "input", "br", "hr", "source"})
+_VOID_TAGS = frozenset({"img", "input", "br", "hr", "source", "video"})
 # Descendants that make an otherwise-empty wrapper worth keeping.
-_INTERACTIVE_TAGS = ["img", "input", "a", "button", "select", "textarea"]
+_INTERACTIVE_TAGS = ["img", "input", "a", "button", "select", "textarea", "video"]
 
 # Attributes worth keeping, per tag. Everything else is dropped.
-_GLOBAL_KEEP_ATTRS: tuple[str, ...] = ("class", "role", "type")
+# data-bg-image is set by the crawler to the element's CSS background image.
+_GLOBAL_KEEP_ATTRS: tuple[str, ...] = ("class", "role", "type", "data-bg-image")
 _TAG_KEEP_ATTRS: dict[str, tuple[str, ...]] = {
     "a": ("href",),
     "img": ("src", "alt"),
+    "video": ("src", "poster", "autoplay", "loop", "muted", "playsinline", "controls"),
+    "source": ("src", "type"),
     "form": ("action", "method"),
     "input": ("name", "placeholder", "value"),
     "textarea": ("name", "placeholder"),
@@ -57,7 +60,7 @@ _TAG_KEEP_ATTRS: dict[str, tuple[str, ...]] = {
     "button": ("name",),
     "label": ("for",),
 }
-_URL_ATTRS = frozenset({"href", "src", "action"})
+_URL_ATTRS = frozenset({"href", "src", "action", "poster", "data-bg-image"})
 
 # Number of structurally identical siblings to keep before collapsing.
 _REPEAT_KEEP = 3
@@ -179,7 +182,7 @@ def _strip_attributes(tag: Tag, url_mapper: UrlMapper | None = None) -> None:
             raw = str(value)
             if url_mapper is not None:
                 raw = url_mapper(name, raw)
-            limit = _MAX_SRC_LEN if name == "src" else _MAX_URL_LEN
+            limit = _MAX_URL_LEN if name in ("href", "action") else _MAX_SRC_LEN
             attrs[name] = _shorten_url(raw, limit)
         elif isinstance(value, str) and len(value) > _MAX_TEXT_LEN:
             attrs[name] = value[:_MAX_TEXT_LEN] + "..."
@@ -227,6 +230,9 @@ def _prune_empty(tag: _Node) -> None:
         if node.name in _VOID_TAGS:
             continue
         if node.find(_INTERACTIVE_TAGS) is not None:
+            continue
+        # A background image is content even in an element without text.
+        if node.has_attr("data-bg-image") or node.find(attrs={"data-bg-image": True}):
             continue
         if node.get_text(strip=True):
             continue

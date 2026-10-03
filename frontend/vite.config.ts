@@ -20,9 +20,16 @@ export default ({ mode }) => {
       // via tunnels/preview URLs (no hardcoded localhost from the browser).
       proxy: {
         "/generate-code": { target: CODEGEN_BACKEND, ws: true },
+        // The clone runs over a websocket, and it is the one route the
+        // clone screen needs. Without it here the browser asks Vite for
+        // /url-to-code, Vite has no route for it, and the run reports
+        // "Is the backend running?" while the backend is sitting there
+        // running on 7001.
+        "/url-to-code": { target: CODEGEN_BACKEND, ws: true },
         "/api": { target: CODEGEN_BACKEND },
         "/local-assets": { target: CODEGEN_BACKEND },
         "/generated": { target: CODEGEN_BACKEND },
+        "/crawl-assets": { target: CODEGEN_BACKEND },
       },
     },
     plugins: [

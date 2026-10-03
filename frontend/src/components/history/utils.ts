@@ -48,7 +48,7 @@ function getCommitMedia(commit: Commit): { images: string[]; videos: string[] } 
   };
 }
 
-export function summarizeHistoryItem(commit: Commit): string {
+function summarizeHistoryItem(commit: Commit): string {
   const commitType = commit.type;
   switch (commitType) {
     case "ai_create":

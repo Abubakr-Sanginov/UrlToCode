@@ -9,10 +9,18 @@ from agent.providers.anthropic import AnthropicProviderSession, serialize_anthro
 from agent.providers.base import ProviderSession
 from agent.providers.gemini import GeminiProviderSession, serialize_gemini_tools
 from agent.providers.openai import OpenAIProviderSession, serialize_openai_tools
+from agent.providers.openrouter import OpenRouterProviderSession
 from agent.tools import canonical_tool_definitions
 from config import REPLICATE_API_KEY
 from fs_logging.agent_runs import AgentRunRecorder
-from llm import ANTHROPIC_MODELS, GEMINI_MODELS, OPENAI_MODELS, Llm
+from llm import (
+    ANTHROPIC_MODELS,
+    GEMINI_MODELS,
+    OPENAI_MODELS,
+    OPENROUTER_MODELS,
+    Llm,
+    get_openrouter_reasoning_effort,
+)
 
 
 def create_provider_session(
@@ -24,6 +32,7 @@ def create_provider_session(
     anthropic_api_key: Optional[str],
     gemini_api_key: Optional[str],
     replicate_api_key: Optional[str],
+    openrouter_api_key: Optional[str] = None,
     should_extract_assets: bool = True,
     recorder: Optional[AgentRunRecorder] = None,
 ) -> ProviderSession:
@@ -76,6 +85,22 @@ def create_provider_session(
             model=model,
             prompt_messages=prompt_messages,
             tools=serialize_gemini_tools(canonical_tools),
+            recorder=recorder,
+        )
+
+    if model in OPENROUTER_MODELS:
+        if not openrouter_api_key:
+            raise Exception("OpenRouter API key is missing.")
+
+        # OpenRouter serves only /chat/completions, never the Responses API
+        # the OpenAI provider below uses, so it gets a session of its own
+        # rather than a different base URL on this one.
+        return OpenRouterProviderSession(
+            api_key=openrouter_api_key,
+            model=model,
+            prompt_messages=prompt_messages,
+            tools=canonical_tools,
+            reasoning_effort=get_openrouter_reasoning_effort(model),
             recorder=recorder,
         )
 

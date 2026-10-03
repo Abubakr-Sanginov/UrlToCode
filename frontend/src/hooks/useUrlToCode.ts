@@ -3,11 +3,16 @@ import { WS_BACKEND_URL } from "../config";
 import { USER_CLOSE_WEB_SOCKET_CODE } from "../constants";
 import { Settings } from "../types";
 import toast from "react-hot-toast";
+import { useCloneStore } from "../store/clone-store";
+import { GENERATED_FILE_PREFIX } from "../lib/projectFiles";
+import { tokenForSocket, Usage } from "../lib/accounts";
+import { useAccountStore } from "../store/account-store";
 
 // Kept in sync with the backend clamps in routes/url_to_code.py so the UI
 // cannot offer values the server would silently discard.
 export const MAX_CRAWL_PAGES = 30;
 export const MAX_CRAWL_DEPTH = 6;
+export const MAX_RETRIES = 5;
 
 export interface PageInfo {
   path: string;
@@ -31,10 +36,25 @@ export interface PageGenProgress {
 export type CrawlPhase =
   | "idle"
   | "crawling"
+  | "choosing"
   | "generating"
   | "done"
   | "failed"
   | "cancelled";
+
+/** One page the crawl found, and the question of whether to build it. */
+export interface SelectablePage {
+  path: string;
+  title: string;
+  url: string;
+  depth: number;
+  screenshot?: string;
+}
+
+export interface PageSelection {
+  pages: SelectablePage[];
+  timeoutSeconds: number;
+}
 
 export interface CrawlRunState {
   phase: CrawlPhase;
@@ -43,6 +63,8 @@ export interface CrawlRunState {
   /** Crawl-phase counter. Page generation uses `currentPage` instead. */
   progress: { current: number; total: number } | null;
   crawlComplete: CrawlComplete | null;
+  /** Set while the user is choosing which pages to build. */
+  pageSelection: PageSelection | null;
   currentPage: PageGenProgress | null;
   completedPages: string[];
   failedPages: string[];
@@ -58,10 +80,23 @@ export interface StartCrawlParams {
   stack: string;
   maxPages: number;
   maxDepth: number;
+  maxRetries: number;
   generateDatabase: boolean;
   generateAuth: boolean;
   /** Pack every page into one HTML file (one model call, no folder needed). */
   singleFile: boolean;
+  /** Capture and check every page at phone, tablet and desktop widths. */
+  responsive: boolean;
+  /** Click the page's own controls and capture what they reveal. */
+  captureInteractions: boolean;
+  /** Show the pages the crawl found and let the user pick which to build. */
+  confirmPages: boolean;
+  /**
+   * A hard limit in dollars for this run. Zero means no limit, which is
+   * what an empty field arrives as - the run must not stop before it has
+   * generated anything unless the user asked for that.
+   */
+  maxCost: number;
   settings: Settings;
 }
 
@@ -70,6 +105,7 @@ const IDLE_STATE: CrawlRunState = {
   status: "",
   progress: null,
   crawlComplete: null,
+  pageSelection: null,
   currentPage: null,
   completedPages: [],
   failedPages: [],
@@ -123,9 +159,14 @@ export function useUrlToCode(
       stack,
       maxPages,
       maxDepth,
+      maxRetries,
       generateDatabase,
       generateAuth,
       singleFile,
+      responsive,
+      captureInteractions,
+      confirmPages,
+      maxCost,
       settings,
     } = params;
 
@@ -136,6 +177,7 @@ export function useUrlToCode(
 
     wsRef.current?.close(USER_CLOSE_WEB_SOCKET_CODE);
     partialCodeRef.current = {};
+    useCloneStore.getState().resetCloneSource();
 
     setState({
       ...IDLE_STATE,
@@ -168,11 +210,17 @@ export function useUrlToCode(
           stack,
           maxPages,
           maxDepth,
+          maxRetries,
           generateDatabase,
           generateAuth,
           singleFile,
+          responsive,
+          captureInteractions,
+          confirmPages,
+          maxCost,
           openRouterApiKey: settings.openRouterApiKey,
           openRouterModel: settings.openRouterModel,
+          reasoningEffort: settings.reasoningEffort,
           openAiApiKey: settings.openAiApiKey,
           openAiBaseURL: settings.openAiBaseURL,
           anthropicApiKey: settings.anthropicApiKey,
@@ -180,6 +228,10 @@ export function useUrlToCode(
           customProviderBaseUrl: settings.customProviderBaseUrl,
           customProviderApiKey: settings.customProviderApiKey,
           customProviderModel: settings.customProviderModel,
+          // A browser will not put a cookie on a websocket handshake to
+          // another origin, and there is no flag that changes it, so the
+          // session travels in this first message instead.
+          sessionToken: tokenForSocket(),
         })
       );
     });
@@ -217,6 +269,12 @@ export function useUrlToCode(
         case "crawlComplete": {
           const found = Number(response.data?.pagesFound ?? 0);
           const pages = (response.data?.pages ?? []) as PageInfo[];
+          useCloneStore.getState().setCloneSource({
+            baseUrl: (response.data?.baseUrl as string | undefined) ?? null,
+            runId: (response.data?.runId as string | undefined) ?? null,
+            screenshots: (response.data?.screenshots ?? {}) as Record<string, string>,
+            sourceUrls: (response.data?.sourceUrls ?? {}) as Record<string, string>,
+          });
           setState((s) => ({
             ...s,
             phase: "generating",
@@ -229,10 +287,25 @@ export function useUrlToCode(
           break;
         }
 
+        case "pageSelection": {
+          // The server has the crawl and is waiting. Nothing is generated
+          // until this is answered, so the UI simply holds the question.
+          const pages = (response.data?.pages ?? []) as SelectablePage[];
+          const timeoutSeconds = Number(response.data?.timeoutSeconds ?? 600);
+          setState((s) => ({
+            ...s,
+            phase: "choosing",
+            status: response.value ?? "Choose which pages to build",
+            pageSelection: { pages, timeoutSeconds },
+          }));
+          break;
+        }
+
         case "pageStart":
           setState((s) => ({
             ...s,
             phase: "generating",
+            pageSelection: null,
             currentPage: response.data as unknown as PageGenProgress,
           }));
           break;
@@ -272,6 +345,27 @@ export function useUrlToCode(
               error: "The model returned no code. Try again or pick a different model.",
             }));
             return;
+          }
+          // The server and mock files come in the same map as the pages,
+          // keyed `file:server/app.py`. They are separated out here so they
+          // reach the project as files without becoming versions a visitor
+          // could switch to.
+          const generatedFiles: Record<string, string> = {};
+          for (const [key, content] of Object.entries(code)) {
+            if (key.startsWith(GENERATED_FILE_PREFIX)) {
+              generatedFiles[key.slice(GENERATED_FILE_PREFIX.length)] = content;
+            }
+          }
+          if (Object.keys(generatedFiles).length > 0) {
+            useCloneStore.setState({ generatedFiles });
+          }
+          // A finished clone becomes one of the account's projects, and the
+          // server says so in the same message. Taken from here rather than
+          // left to the next poll, or the panel would still read "0 of 1"
+          // the moment after telling the user the clone worked.
+          const settled = response.data?.usage as Usage | undefined;
+          if (settled) {
+            useAccountStore.setState({ usage: settled });
           }
           setState((s) => ({
             ...s,
@@ -356,5 +450,34 @@ export function useUrlToCode(
     toast.success("Clone cancelled");
   }, []);
 
-  return { state, startCrawl, cancelCrawl, reset };
+  /**
+   * Answer the page-selection question.
+   *
+   * An empty list is a real answer: the user looked at the pages and chose
+   * none of them. The server takes that as a decision and stops, which is
+   * why this does not check for emptiness and quietly send everything.
+   */
+  const choosePages = useCallback((paths: string[]) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      toast.error("The connection to the backend is already gone.");
+      return;
+    }
+    setState((s) => ({
+      ...s,
+      phase: paths.length ? "generating" : "cancelled",
+      pageSelection: null,
+      isLoading: paths.length > 0,
+      status: paths.length
+        ? `Generating ${paths.length} selected page${paths.length === 1 ? "" : "s"}...`
+        : "No pages selected",
+    }));
+    try {
+      ws.send(JSON.stringify({ type: "pageSelection", paths }));
+    } catch {
+      toast.error("The selection could not be sent to the backend.");
+    }
+  }, []);
+
+  return { state, startCrawl, cancelCrawl, choosePages, reset };
 }

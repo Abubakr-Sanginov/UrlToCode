@@ -42,6 +42,11 @@ build/
 .env.*
 !.env.example
 
+# Output from video tooling run inside the repo. Large binaries that belong
+# to a job, not to the project.
+brag-output/
+brag-output-*/
+
 # IDE files
 .vscode/
 .idea/
@@ -84,3 +89,6 @@ CLAUDE.md
 .windsurf/
 .continue/
 .pytest_cache/
+
+# Images and videos captured while crawling
+backend/crawl_assets/

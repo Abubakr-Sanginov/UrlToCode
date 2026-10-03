@@ -1,11 +1,10 @@
 import asyncio
-import base64
 import json
 import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from urllib.parse import urljoin, urlparse, urlunparse
 
 # Run as a script (`python crawler/playwright_worker.py`), so the backend
@@ -13,12 +12,27 @@ from urllib.parse import urljoin, urlparse, urlunparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import CRAWLER_HEADLESS  # noqa: E402  (path set up above)
-from llm_http import (  # noqa: E402  (path set up above)
-    LlmConfig,
-    ProviderError,
-    complete,
-    read_worker_params,
+from llm_http import read_worker_params  # noqa: E402  (path set up above)
+from crawler.media_store import (  # noqa: E402  (path set up above)
+    MAX_CRAWL_MEDIA_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
+    find_media,
+    media_kind,
+    save_media,
+    screenshot_key,
 )
+from crawler import route_discovery  # noqa: E402  (path set up above)
+from crawler import route_recorder  # noqa: E402  (path set up above)
+from crawler import responsive  # noqa: E402  (path set up above)
+from crawler import interaction_states  # noqa: E402  (path set up above)
+from crawler import embedded as embedded_content  # noqa: E402  (path set up above)
+import clone_mock  # noqa: E402  (path set up above)
+
+# A sitemap is fetched with the request context, not the page, so a slow or
+# huge one cannot stall the crawl.
+MANIFEST_TIMEOUT_MS = 8000
+MAX_MANIFEST_BYTES = 1_000_000
 
 
 def normalize(url: str) -> str:
@@ -32,96 +46,12 @@ def same_domain(url: str, base: str) -> bool:
     return ud == bd or ud.endswith("." + bd)
 
 
-async def _neutralize_navigation(page):
-    """Prevent clicks from navigating or submitting forms.
-
-    Clicking real links or submit buttons navigates away (or posts the form),
-    so every later field (title, html, links, forms) would describe a
-    different page under the original URL. A capture-phase click handler
-    cancels those default actions while leaving dropdown/tab clicks working.
-
-    The handler honours window.__neutralize_nav so LLM-guided exploration
-    can temporarily re-enable navigation to observe search result pages.
-    """
-    await page.evaluate(
-        """
-        window.__neutralize_nav = true;
-        document.addEventListener('click', (e) => {
-            if (!window.__neutralize_nav) return;
-            const t = e.target;
-            if (t && t.closest && (t.closest('a') || t.closest('form'))) {
-                e.preventDefault();
-            }
-        }, true);
-        """
-    )
-
-
-SIGN_IN_TEXT_RE = re.compile(
-    r"^(sign\s?in|sign\s?up|log\s?in|register|войти|вход|регистрац|"
-    r"anmelden|connexion|iniciar sesi)",
-    re.IGNORECASE,
-)
-
-
-async def click_selectors(page: Any, selectors: List[str], max_clicks: int = 5) -> int:
-    """Click elements matching any of the selectors, staying on this page.
-
-    Single-page apps navigate from JavaScript, which preventDefault cannot
-    stop, so a click can silently move the browser elsewhere (YouTube ends up
-    on the Google sign-in page). Everything captured afterwards would then
-    describe that other page under this URL, so a click that navigates ends
-    the click phase and the original URL is restored.
-    """
-    start_url = page.url
-    clicked = 0
-
-    async def back_on_page() -> bool:
-        if normalize(page.url) == normalize(start_url):
-            return True
-        print(
-            f"[Worker]   click navigated to {page.url}; returning to {start_url}",
-            file=sys.stderr, flush=True,
-        )
-        try:
-            await page.goto(start_url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1500)
-        except Exception as e:
-            print(f"[Worker]   failed to return: {e}", file=sys.stderr, flush=True)
-        return False
-
-    for selector in selectors:
-        try:
-            elements = await page.query_selector_all(selector)
-            for el in elements[:max_clicks]:
-                try:
-                    if not await el.is_visible():
-                        continue
-                    label = (
-                        (await el.inner_text())
-                        or (await el.get_attribute("aria-label"))
-                        or ""
-                    ).strip()
-                    if SIGN_IN_TEXT_RE.match(label):
-                        # Sign-in controls lead off-site; the page behind them
-                        # is not part of this crawl.
-                        continue
-                    await el.click(timeout=1500, force=True)
-                    await page.wait_for_timeout(500)
-                    clicked += 1
-                    if not await back_on_page():
-                        return clicked
-                    if clicked >= max_clicks:
-                        return clicked
-                except Exception:
-                    continue
-        except Exception:
-            continue
-    return clicked
-
-
 async def scroll_page(page):
-    """Scroll down the page to trigger lazy-loaded content."""
+    """Scroll down the page to trigger lazy-loaded content.
+
+    Scrolling is observation, not interaction: it never changes page state,
+    it only lets the page finish rendering what a visitor would see.
+    """
     try:
         for i in range(5):
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
@@ -129,339 +59,6 @@ async def scroll_page(page):
         await page.evaluate("window.scrollTo(0, 0)")
     except Exception:
         pass
-
-
-# ---------------------------------------------------------------------------
-# LLM-guided exploration
-# ---------------------------------------------------------------------------
-
-_EXTRACT_ELEMENTS_JS = """
-() => {
-    function getSelector(el) {
-        if (el.id) return '#' + el.id;
-        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
-        const testid = el.getAttribute('data-testid');
-        if (testid) return '[data-testid="' + testid + '"]';
-        const aria = el.getAttribute('aria-label');
-        if (aria) return '[aria-label="' + aria.replace(/"/g, '\\\\\\"') + '"]';
-        const cls = typeof el.className === 'string' ? el.className.trim() : '';
-        if (cls) {
-            const first = cls.split(/\\\\s+/)[0];
-            return el.tagName.toLowerCase() + '.' + first;
-        }
-        return el.tagName.toLowerCase();
-    }
-
-    const results = [];
-    const seen = new Set();
-
-    function add(el, kind) {
-        const sel = getSelector(el);
-        if (seen.has(sel)) return;
-        seen.add(sel);
-        const text = (el.textContent || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
-        results.push({
-            kind: kind,
-            selector: sel,
-            text: text,
-            type: el.type || el.getAttribute('type') || '',
-            placeholder: el.placeholder || '',
-            name: el.name || '',
-            href: el.getAttribute('href') || '',
-        });
-    }
-
-    // Search inputs — highest priority
-    document.querySelectorAll("input[type='search'], [role='searchbox'], input[placeholder*='search' i], input[name*='search' i], input[aria-label*='search' i]").forEach(el => add(el, 'search-input'));
-
-    // Other text inputs
-    document.querySelectorAll("input[type='text'], input:not([type])").forEach(el => {
-        if (!seen.has(getSelector(el))) add(el, 'text-input');
-    });
-
-    // Buttons
-    document.querySelectorAll("button:not([disabled]), [role='button']:not([disabled]), input[type='submit'], input[type='button']").forEach(el => add(el, 'button'));
-
-    // Tabs
-    document.querySelectorAll("[role='tab'], .tab, .nav-link, .menu-item").forEach(el => add(el, 'tab'));
-
-    // Accordions / expandable
-    document.querySelectorAll("[aria-expanded='false'], details > summary, .accordion-button, .dropdown-toggle, [data-toggle], [data-bs-toggle]").forEach(el => add(el, 'expandable'));
-
-    // Links (informational only — LLM should NOT navigate through these)
-    document.querySelectorAll("nav a[href], header a[href]").forEach(el => add(el, 'nav-link'));
-
-    return results.slice(0, 35);
-}
-"""
-
-
-def _build_exploration_prompt(title, url, elements, page_text):
-    """Build the prompt that asks the LLM what to interact with."""
-    elements_text = json.dumps(elements, indent=2, ensure_ascii=False)
-    return f"""You are exploring a webpage to understand its content and functionality.
-
-Page title: "{title}"
-URL: {url}
-
-Page content (first 500 chars):
-{page_text[:500]}
-
-Interactive elements found on the page:
-{elements_text}
-
-Your task: decide what to interact with to discover MORE content that is currently hidden.
-
-LOOK AT THE PAGE FIRST. Work out what kind of site this is and what its main
-input field is for, then act accordingly:
-
-SEARCH / QUERY FIELDS (highest priority):
-- A field may be a site search, but it may also be a chat/prompt box, a
-  filter, a login field, a newsletter signup or a code/address lookup. The
-  placeholder, aria-label, name and surrounding text tell you which.
-- Only type into a field whose result is *content worth cloning*: site search,
-  filters, query boxes. Never type into login, password, payment or signup
-  fields.
-- Use a SHORT query (1-2 words) that this specific site would plausibly have
-  results for — derive it from the page topic, not from a generic word list.
-- Results may appear in three different ways, all of them useful:
-  (a) a new results URL, (b) the same URL with the results rendered in place,
-  (c) a suggestion/autocomplete dropdown under the field.
-  Type the query and we will observe which one happens.
-
-OTHER RULES:
-1. Click tabs, accordions, dropdowns and filters to reveal hidden content.
-2. Do NOT click regular navigation links — those are crawled separately.
-3. Maximum 4 actions, ordered most valuable first.
-4. Think step by step: what does this site do? What content is hidden behind
-   interactions?
-
-Respond with ONLY valid JSON (no markdown fences, no explanation). Each action
-may carry a short "why" describing what you expect to happen:
-{{"actions": [{{"type": "type", "selector": "input[name='q']", "value": "music", "why": "site search for videos"}}, {{"type": "click", "selector": "[role='tab']:nth-child(2)", "why": "second tab"}}]}}
-
-If there is nothing worth interacting with, respond: {{"actions": []}}"""
-
-
-async def _call_llm(llm_config: Dict[str, Any], system_prompt: str) -> Optional[str]:
-    """Ask the model what to interact with; None when it cannot answer.
-
-    Exploration is best-effort: a provider failure costs a few interactions,
-    never the crawl, so refusals are logged rather than raised.
-    """
-    cfg = LlmConfig.from_dict(llm_config)
-    if not cfg.is_usable:
-        return None
-
-    try:
-        # Deciding what to click is a small answer; a long budget here only
-        # delays a crawl that is already on a deadline.
-        result = await complete(
-            cfg,
-            system_prompt,
-            "Return the JSON actions now.",
-            max_tokens=2000,
-            timeout=90,
-        )
-    except ProviderError as e:
-        print(f"[Worker] LLM refused: {e}", file=sys.stderr, flush=True)
-        return None
-    except Exception as e:
-        print(f"[Worker] LLM call failed: {e}", file=sys.stderr, flush=True)
-        return None
-
-    if not result.text:
-        print(f"[Worker] LLM gave no actions: {result.empty_reason}", file=sys.stderr, flush=True)
-    return result.text
-
-
-def _parse_actions(response_text: Optional[str]) -> List[Dict[str, Any]]:
-    """Parse the LLM JSON response into a list of actions."""
-    if not response_text:
-        return []
-    try:
-        text: str = response_text.strip()
-        # Strip markdown fences if present
-        if "```" in text:
-            match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
-        # Find the JSON object
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            parsed: Any = json.loads(text[start:end + 1])
-            actions = parsed.get("actions", [])
-            if isinstance(actions, list):
-                valid: List[Dict[str, Any]] = []
-                a: Any
-                for a in actions:
-                    if (
-                        isinstance(a, dict)
-                        and a.get("type") in ("click", "type")
-                        and a.get("selector")
-                    ):
-                        valid.append(a)
-                return valid[:5]
-    except (ValueError, KeyError) as e:
-        print(f"[Worker] Failed to parse LLM actions: {e}", file=sys.stderr, flush=True)
-    return []
-
-
-SENSITIVE_FIELD_RE = re.compile(
-    r"password|passwd|email|e-mail|card|cvv|phone|login|sign\s?in|sign\s?up|"
-    r"register|subscribe|newsletter|identifier|username|user_?name|account|"
-    r"auth|otp|passcode|billing",
-    re.IGNORECASE,
-)
-
-# Pages whose only inputs are credentials. Sites redirect to these (YouTube
-# bounces to accounts.google.com), and the one thing we must not do there is
-# type into the form.
-AUTH_URL_RE = re.compile(
-    r"accounts\.google\.|/signin|/sign-in|/login|/log-in|/register|/signup|/auth",
-    re.IGNORECASE,
-)
-
-
-def _looks_sensitive(element: Dict[str, Any]) -> bool:
-    """True for fields we must not type into (credentials, signup, payment)."""
-    if (element.get("type") or "").lower() in ("password", "email", "tel"):
-        return True
-    haystack = " ".join(
-        str(element.get(k) or "")
-        for k in ("selector", "text", "placeholder", "name")
-    )
-    return bool(SENSITIVE_FIELD_RE.search(haystack))
-
-
-async def _body_text_len(page: Any) -> int:
-    try:
-        return int(await page.evaluate(
-            "document.body ? document.body.innerText.length : 0"
-        ))
-    except Exception:
-        return 0
-
-
-async def _wait_for_result(
-    page: Any, before_url: str, before_len: int, timeout_ms: int = 8000
-) -> str:
-    """Wait until the page reacts to an interaction.
-
-    Search results show up in three different shapes: a new results URL, the
-    same URL re-rendered in place, or a suggestion dropdown. Polling for
-    either a URL change or a substantial body-text change catches all three,
-    instead of assuming the URL must change.
-
-    Returns "url", "dom" or "" (nothing observable happened).
-    """
-    deadline = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < deadline:
-        try:
-            if normalize(page.url) != normalize(before_url):
-                return "url"
-            if abs(await _body_text_len(page) - before_len) > 200:
-                return "dom"
-        except Exception:
-            pass
-        await page.wait_for_timeout(400)
-    return ""
-
-
-async def _execute_action(page: Any, action: Dict[str, Any]) -> tuple[bool, Optional[str], str]:
-    """Execute a single LLM-directed action and observe what it produced.
-
-    Returns (produced_something, new_url, description). `produced_something`
-    is true when the page visibly reacted — a navigation OR an in-place DOM
-    update — so client-side search is not mistaken for a no-op.
-    """
-    action_type: str = action.get("type", "")
-    selector: str = action.get("selector", "")
-
-    if not selector:
-        return False, None, ""
-
-    desc = f"{action_type} on '{selector}'"
-    if action_type == "type":
-        desc += f" value='{action.get('value', '')}'"
-    if action.get("why"):
-        desc += f" ({str(action['why'])[:60]})"
-
-    try:
-        el = await page.query_selector(selector)
-        if not el or not await el.is_visible():
-            return False, None, desc + " [not visible]"
-
-        if action_type == "type":
-            value = str(action.get("value", "")).strip()
-            if not value:
-                return False, None, desc + " [empty query]"
-            if _looks_sensitive({
-                "selector": selector,
-                "placeholder": await el.get_attribute("placeholder") or "",
-                "name": await el.get_attribute("name") or "",
-                "type": await el.get_attribute("type") or "",
-            }):
-                return False, None, desc + " [skipped: sensitive field]"
-
-            before_url = page.url
-            before_len = await _body_text_len(page)
-
-            await el.click(timeout=2000)
-            try:
-                await el.fill("")
-            except Exception:
-                pass
-            # Type through the keyboard rather than the element handle: it
-            # fires the input events live-search listens for, and it keeps
-            # working on sites (Wikipedia, most SPAs) that swap the search box
-            # for a hydrated one mid-typing, detaching the handle.
-            await page.keyboard.type(value, delay=60)
-            suggestion = await _wait_for_result(
-                page, before_url, before_len, timeout_ms=2500
-            )
-            if suggestion:
-                desc += f" [live {suggestion}]"
-
-            # Submit via Enter — this fires the form submit event, which
-            # bypasses the click-phase navigation blocker.
-            try:
-                await page.keyboard.press("Enter")
-            except Exception as e:
-                print(f"[Worker] Enter failed: {e}", file=sys.stderr, flush=True)
-            observed = await _wait_for_result(page, before_url, before_len)
-            if not observed and suggestion:
-                # Live results already rendered; Enter changed nothing more.
-                observed = suggestion
-            desc += f" [observed={observed or 'nothing'}]"
-            return bool(observed), page.url, desc
-
-        elif action_type == "click":
-            before_url = page.url
-            before_len = await _body_text_len(page)
-            await el.click(timeout=2000, force=True)
-            observed = await _wait_for_result(
-                page, before_url, before_len, timeout_ms=5000
-            )
-            desc += f" [observed={observed or 'nothing'}]"
-            return bool(observed), page.url, desc
-    except Exception as e:
-        print(f"[Worker] Action failed ({desc}): {e}", file=sys.stderr, flush=True)
-
-    return False, None, desc
-
-
-# Matched as a prefix of a short button label ("Accept all", "Принять все").
-CONSENT_TEXT_RE = re.compile(
-    "^(accept|agree|i agree|allow|got it|ok|"
-    "accept all|accept cookies|alle akzeptieren|akzeptieren|"
-    "aceptar|accepter|aceitar|принять|согласен|соглашаюсь|хорошо)",
-    re.IGNORECASE,
-)
-
-
-CONSENT_URL_RE = re.compile(r"consent\.|/consent|cookie[-_]?(wall|consent)", re.IGNORECASE)
 
 
 # Bot-check interstitials ("Just a moment…", "Checking your browser"). Cloning
@@ -509,62 +106,479 @@ async def wait_out_bot_check(page: Any, max_wait: float = 20.0) -> bool:
     return True
 
 
-async def dismiss_consent(page: Any, attempts: int = 3) -> bool:
-    """Click through a cookie/consent wall before capturing the page.
+# Resolves what the page actually shows into plain attributes before the
+# markup is captured: the image variant the browser picked (srcset, lazy
+# data-src), CSS background images (as data-bg-image, which the compactor
+# keeps) and <video> sources and posters. Returns the media, in page order.
+_PREPARE_MEDIA_JS = r"""() => {
+  const abs = (u) => { try { return new URL(u, document.baseURI).href; } catch (e) { return ""; } };
+  const usable = (u) => u && !u.startsWith("data:") && !u.startsWith("blob:");
+  const images = [];
+  const videos = [];
+  const addImage = (u) => { if (usable(u) && !images.includes(u)) images.push(u); };
 
-    Google serves consent.youtube.com instead of YouTube itself, so a crawl
-    that ignores the wall clones the dialog rather than the site. Only
-    accept-style buttons are clicked, and only one of them. The wall often
-    renders a beat after DOMContentLoaded, so a single look misses it.
+  for (const img of document.querySelectorAll("img")) {
+    let src = img.currentSrc || img.src || "";
+    const lazy = img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || img.getAttribute("data-original");
+    if (!usable(src) && lazy) src = abs(lazy);
+    if (usable(src)) {
+      img.setAttribute("src", src);
+      // Tracking pixels are not content.
+      const pixel = img.complete && img.naturalWidth <= 2 && img.naturalHeight <= 2;
+      if (!pixel) addImage(src);
+    }
+  }
+
+  const elements = document.querySelectorAll("body *");
+  for (let i = 0; i < elements.length && i < 5000; i++) {
+    const el = elements[i];
+    const bg = getComputedStyle(el).backgroundImage;
+    if (!bg || bg === "none") continue;
+    const match = bg.match(/url\(["']?([^"')]+)["']?\)/);
+    if (!match) continue;
+    const u = abs(match[1]);
+    if (!usable(u)) continue;
+    el.setAttribute("data-bg-image", u);
+    addImage(u);
+  }
+
+  for (const video of document.querySelectorAll("video")) {
+    let src = video.currentSrc || video.getAttribute("src") || "";
+    const source = video.querySelector("source[src]");
+    if (!usable(src) && source) src = source.src;
+    src = usable(src) ? abs(src) : "";
+    const poster = video.getAttribute("poster") ? abs(video.getAttribute("poster")) : "";
+    if (src) video.setAttribute("src", src);
+    if (poster) {
+      video.setAttribute("poster", poster);
+      addImage(poster);
+    }
+    if ((src || poster) && !videos.some((v) => v.src === src && v.poster === poster)) {
+      videos.push({ src: src, poster: poster });
+    }
+  }
+  return { images: images, videos: videos };
+}"""
+
+# Media downloads per page beyond what the page loaded by itself.
+MAX_FETCHED_IMAGES_PER_PAGE = 40
+MAX_FETCHED_VIDEOS_PER_PAGE = 4
+
+
+class MediaCapture:
+    """Saves the images and videos the crawled pages load.
+
+    Responses are stored straight from the network as the browser receives
+    them, which covers images behind signed URLs or hotlink protection. What
+    the page references but never fully loaded (videos stream in partial
+    ranges, lazy images below the fold) is fetched afterwards with the
+    browser's cookies.
     """
-    for attempt in range(attempts):
-        if await _try_dismiss_consent(page):
-            return True
-        # Only keep waiting while we are demonstrably stuck on a consent wall.
-        if attempt + 1 < attempts and CONSENT_URL_RE.search(page.url):
-            await page.wait_for_timeout(1500)
-            continue
-        return False
-    return False
 
+    def __init__(self) -> None:
+        self.saved: Dict[str, str] = {}
+        self.failed: set[str] = set()
+        self.total_bytes = 0
+        self._pending: List["asyncio.Future[None]"] = []
 
-async def _try_dismiss_consent(page: Any) -> bool:
-    try:
-        candidates = await page.query_selector_all(
-            "button, [role='button'], input[type='submit'], form a[role='button']"
-        )
-    except Exception:
-        return False
+    def has_room(self, size: int) -> bool:
+        return self.total_bytes + size <= MAX_CRAWL_MEDIA_BYTES
 
-    for el in candidates[:40]:
+    def _store(self, url: str, content_type: str, body: bytes) -> None:
+        if not self.has_room(len(body)):
+            return
+        name = save_media(url, content_type, body)
+        if name:
+            self.saved[url] = name
+            self.total_bytes += len(body)
+
+    def on_response(self, response: Any) -> None:
+        self._pending.append(asyncio.ensure_future(self._from_response(response)))
+
+    async def _from_response(self, response: Any) -> None:
         try:
-            if not await el.is_visible():
-                continue
-            label = (
-                await el.inner_text()
-                or await el.get_attribute("aria-label")
-                or await el.get_attribute("value")
-                or ""
-            ).strip()
-            # A long label is prose, not a consent button.
-            if len(label) > 40 or not CONSENT_TEXT_RE.match(label):
-                continue
-            before_url = page.url
-            before_len = await _body_text_len(page)
-            await el.click(timeout=3000)
-            changed = await _wait_for_result(page, before_url, before_len, timeout_ms=6000)
-            print(
-                f"[Worker] Dismissed consent via '{label}' -> {changed or 'no change'}",
-                file=sys.stderr, flush=True,
+            url: str = response.url
+            if url in self.saved or not url.startswith("http"):
+                return
+            if response.request.resource_type not in ("image", "media"):
+                return
+            # A 206 is one range of a streamed video; it is fetched whole later.
+            if response.status != 200:
+                return
+            content_type = response.headers.get("content-type", "")
+            if media_kind(content_type) is None:
+                return
+            length = int(response.headers.get("content-length") or 0)
+            if length > MAX_VIDEO_BYTES:
+                return
+            self._store(url, content_type, await response.body())
+        except Exception:
+            # Bodies of responses from a page that navigated away are gone.
+            pass
+
+    async def settle(self, timeout: float = 15.0) -> None:
+        """Wait for in-flight response bodies to be written."""
+        pending, self._pending = self._pending, []
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    async def fetch(self, context: Any, url: str, referer: str, kind: str) -> None:
+        """Download a referenced file the page did not load in full."""
+        if url in self.saved or url in self.failed or not url.startswith("http"):
+            return
+        known = find_media(url)
+        if known:
+            self.saved[url] = known
+            return
+        limit = MAX_VIDEO_BYTES if kind == "video" else MAX_IMAGE_BYTES
+        try:
+            head = await context.request.head(
+                url, headers={"referer": referer}, timeout=10000, fail_on_status_code=False
             )
-            return bool(changed)
+            if int(head.headers.get("content-length") or 0) > limit:
+                self.failed.add(url)
+                return
+            response = await context.request.get(
+                url,
+                headers={"referer": referer},
+                timeout=60000 if kind == "video" else 15000,
+                fail_on_status_code=False,
+            )
+            if response.status != 200:
+                self.failed.add(url)
+                return
+            self._store(url, response.headers.get("content-type", ""), await response.body())
+        except Exception as e:
+            self.failed.add(url)
+            print(f"[Worker]   media fetch failed {url[:80]}: {e}", file=sys.stderr, flush=True)
+
+    def files_for(self, urls: List[str]) -> Dict[str, str]:
+        return {url: self.saved[url] for url in urls if url in self.saved}
+
+
+# What the page looks like beyond its markup: the fonts and colors it
+# actually renders with (computed styles, not guesses from the source), the
+# web font stylesheets it loads, and the head metadata a clone should keep.
+_DESIGN_JS = r"""() => {
+  const hex = (c) => {
+    const m = c && c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    if (!m || (m[4] !== undefined && parseFloat(m[4]) < 0.5)) return "";
+    return "#" + [m[1], m[2], m[3]].map((n) => (+n).toString(16).padStart(2, "0")).join("");
+  };
+  const family = (s) => s.fontFamily.split(",")[0].replace(/["']/g, "").trim();
+  const tally = (map, key, weight) => {
+    if (key && weight > 0) map[key] = (map[key] || 0) + weight;
+  };
+  const ranked = (map) => Object.entries(map).sort((a, b) => b[1] - a[1]).map((e) => e[0]);
+
+  // Only what a visitor sees counts, weighted by how much of it they see:
+  // text colors by the amount of text, backgrounds by the area they cover.
+  // Picking "the first h1" or "the first link" measured hidden menus and
+  // one-off buttons, and the clone was recolored after them.
+  const text = {}, background = {}, headings = {}, links = {};
+  const buttonBg = {}, buttonText = {}, bodyFonts = {}, headingFonts = {};
+  const bodySizes = {}, headingSizes = {};
+  const viewportArea = window.innerWidth * window.innerHeight;
+
+  for (const el of [document.documentElement, document.body]) {
+    const s = getComputedStyle(el);
+    tally(background, hex(s.backgroundColor), viewportArea / 1000);
+  }
+
+  const elements = document.querySelectorAll("body *");
+  for (let i = 0; i < elements.length && i < 4000; i++) {
+    const el = elements[i];
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === "hidden" || s.display === "none" || parseFloat(s.opacity || "1") < 0.1) continue;
+
+    let own = 0;
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3) own += node.textContent.trim().length;
+    }
+    const bg = hex(s.backgroundColor);
+    tally(background, bg, Math.min(rect.width * rect.height, viewportArea) / 1000);
+
+    const tag = el.tagName;
+    const button =
+      tag === "BUTTON" || el.getAttribute("role") === "button" || (tag === "A" && bg);
+    if (button && bg) {
+      tally(buttonBg, bg, 1);
+      tally(buttonText, hex(s.color), 1);
+    }
+    if (!own) continue;
+
+    tally(text, hex(s.color), own);
+    if (el.closest("h1, h2, h3")) {
+      tally(headings, hex(s.color), own);
+      tally(headingFonts, family(s), own);
+      tally(headingSizes, s.fontSize, own);
+    } else {
+      tally(bodyFonts, family(s), own);
+      tally(bodySizes, s.fontSize, own);
+      if (tag === "A" && !bg && el.closest("p, li")) tally(links, hex(s.color), own);
+    }
+  }
+
+  const pageBackground = ranked(background)[0] || "#ffffff";
+  const primary = ranked(buttonBg).filter((c) => c !== pageBackground);
+  const palette = [];
+  for (const c of [...ranked(text).slice(0, 4), ...ranked(background).slice(0, 4), ...primary.slice(0, 2)]) {
+    if (!palette.includes(c)) palette.push(c);
+  }
+
+  const fontLinks = Array.from(document.querySelectorAll("link[rel=stylesheet][href]"))
+    .map((l) => l.href)
+    .filter((h) => /fonts\.googleapis\.com|fonts\.bunny\.net|use\.typekit\.net|fonts\.cdnfonts\.com/.test(h))
+    .slice(0, 4);
+
+  const meta = (sel) => {
+    const m = document.querySelector(sel);
+    return m ? (m.getAttribute("content") || "").trim() : "";
+  };
+  const icon = document.querySelector(
+    "link[rel~='icon'][href], link[rel='shortcut icon'][href], link[rel='apple-touch-icon'][href]"
+  );
+  return {
+    design: {
+      bodyFont: ranked(bodyFonts)[0] || family(getComputedStyle(document.body)),
+      headingFont: ranked(headingFonts)[0] || "",
+      textColor: ranked(text)[0] || "",
+      backgroundColor: pageBackground,
+      headingColor: ranked(headings)[0] || "",
+      linkColor: ranked(links)[0] || "",
+      buttonColor: primary[0] || "",
+      buttonTextColor: primary[0] ? ranked(buttonText)[0] || "" : "",
+      baseFontSize: ranked(bodySizes)[0] || "",
+      headingFontSize: ranked(headingSizes)[0] || "",
+      palette: palette,
+      fontLinks: fontLinks,
+    },
+    meta: {
+      lang: document.documentElement.lang || "",
+      description: meta("meta[name=description]"),
+      ogImage: meta("meta[property='og:image']"),
+      themeColor: meta("meta[name=theme-color]"),
+      favicon: icon ? icon.href : new URL("/favicon.ico", location.origin).href,
+    },
+  };
+}"""
+
+
+async def collect_design(page: Any) -> Dict[str, Any]:
+    """Computed fonts/colors and head metadata of the rendered page."""
+    try:
+        found: Dict[str, Any] = await page.evaluate(_DESIGN_JS)
+        return found
+    except Exception as e:
+        print(f"[Worker]   design scan failed: {e}", file=sys.stderr, flush=True)
+        return {"design": {}, "meta": {}}
+
+
+# Full-page screenshots are cut here: a long page would otherwise be a
+# 30 000 px image nobody scrolls through.
+MAX_SCREENSHOT_HEIGHT = 6000
+
+
+async def capture_screenshot(page: Any, url: str, viewport: Optional[responsive.Viewport] = None) -> str:
+    """Store a full-page JPEG of the original; returns its store file name.
+
+    With a viewport given, the page is re-laid out at that width first: a
+    screenshot taken at 375px of a page still laid out at 1366px is the desktop
+    page with its edges cut off, which tells nobody anything about mobile.
+    """
+    try:
+        target = viewport or responsive.Viewport("desktop", responsive.CANONICAL_WIDTH, 768)
+        if target.width != responsive.CANONICAL_WIDTH:
+            await page.set_viewport_size({"width": target.width, "height": target.height})
+            # The page has to re-lay out and finish reflowing before it is
+            # worth photographing; a capture taken immediately is a frame of
+            # the transition, not of the layout.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=2000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(600)
+
+        size = page.viewport_size or {"width": target.width, "height": target.height}
+        height = int(await page.evaluate("document.documentElement.scrollHeight") or 0)
+        height = max(min(height, MAX_SCREENSHOT_HEIGHT), int(size["height"]))
+        shot: bytes = await page.screenshot(
+            type="jpeg",
+            quality=70,
+            full_page=True,
+            clip={"x": 0, "y": 0, "width": size["width"], "height": height},
+        )
+        stored = save_media(
+            responsive.screenshot_file_for(screenshot_key(url), target.name),
+            "image/jpeg",
+            shot,
+            overwrite=True,
+        )
+        # The page keeps the width it was captured at for the rest of its own
+        # capture, so the width is restored before the caller goes on.
+        if target.width != responsive.CANONICAL_WIDTH:
+            await page.set_viewport_size(
+                {"width": responsive.CANONICAL_WIDTH, "height": int(size["height"])}
+            )
+        return stored or ""
+    except Exception as e:
+        print(f"[Worker]   screenshot failed: {e}", file=sys.stderr, flush=True)
+        return ""
+
+
+async def collect_media(
+    page: Any,
+    context: Any,
+    media: MediaCapture,
+    fetch_missing: bool,
+    extra_images: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Resolve the page's media in the DOM and make sure it is stored."""
+    try:
+        found: Dict[str, Any] = await page.evaluate(_PREPARE_MEDIA_JS)
+    except Exception as e:
+        print(f"[Worker]   media scan failed: {e}", file=sys.stderr, flush=True)
+        found = {"images": [], "videos": []}
+
+    images: List[str] = [u for u in found.get("images", []) if isinstance(u, str)]
+    videos: List[Dict[str, str]] = [
+        {"src": str(v.get("src") or ""), "poster": str(v.get("poster") or "")}
+        for v in found.get("videos", [])
+        if isinstance(v, dict)
+    ]
+
+    await media.settle()
+    if fetch_missing:
+        for url in images[:MAX_FETCHED_IMAGES_PER_PAGE]:
+            await media.fetch(context, url, page.url, "image")
+        for video in videos[:MAX_FETCHED_VIDEOS_PER_PAGE]:
+            if video["src"]:
+                await media.fetch(context, video["src"], page.url, "video")
+    # Head images (favicon) are wanted even when the crawl is short on time.
+    extras = [u for u in (extra_images or []) if u]
+    for url in extras:
+        await media.fetch(context, url, page.url, "image")
+
+    urls = images + [v["src"] for v in videos if v["src"]] + extras
+    return {"images": images, "videos": videos, "media": media.files_for(urls)}
+
+
+async def capture_interaction_states(
+    page: Any, url: str, base_url: str, limit: int
+) -> List[Dict[str, Any]]:
+    """Photograph the states a page reveals when its own controls are used.
+
+    Opt-in, because this is the one part of the crawl that acts rather than
+    watches. It clicks only controls the page itself marks as opening
+    something, never submits a form, and puts the page back the way it found
+    it after every one - so the capture that follows describes the same page
+    the visitor would land on.
+    """
+    states: List[Dict[str, Any]] = []
+    script = interaction_states.PROBE_JS % (
+        json.dumps(interaction_states.CLICKABLE),
+        json.dumps(bool(interaction_states.OPEN_PATTERN)),
+        interaction_states.MAX_NODES,
+    )
+    try:
+        found = await page.evaluate(script)
+    except Exception as e:
+        print(f"[Worker]   state probe failed: {e}", file=sys.stderr, flush=True)
+        return states
+
+    probed: Optional[Dict[str, Any]] = (
+        cast(Dict[str, Any], found) if isinstance(found, dict) else None
+    )
+    nodes: Any = probed.get("nodes") if probed is not None else None
+    if not isinstance(nodes, list):
+        return states
+    candidates = cast(List[Dict[str, Any]], nodes)
+
+    for node in interaction_states.choose_controls(candidates, limit):
+        selector = str(node.get("selector") or "")
+        label = str(node.get("label") or "")
+        index = 0
+        # The probe listed every node for each selector in document order, so
+        # the one chosen here is the nth that matches and is safe to click.
+        try:
+            index = await page.evaluate(
+                "(s) => Array.from(document.querySelectorAll(s))"
+                ".findIndex(n => (n.innerText || n.value || n.getAttribute('aria-label')"
+                " || '').trim().slice(0, 80) === %s)" % json.dumps(label),
+                selector,
+            )
+        except Exception:
+            index = 0
+        if index is None or index < 0:
+            continue
+
+        # Reloading between states is what makes the capture repeatable: two
+        # menus opened one after another would show the second one over the
+        # first, and a page left scrolled half way down is not what a visitor
+        # sees.
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_selector("body", timeout=5000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(800)
+
+        try:
+            clicked = await page.evaluate(
+                interaction_states.click_script(selector, int(index))
+            )
+        except Exception as e:
+            print(f"[Worker]   state click failed: {e}", file=sys.stderr, flush=True)
+            continue
+        if not clicked:
+            continue
+        await page.wait_for_timeout(700)
+
+        # A click that navigated is not a state of this page; it is another
+        # page, and the crawl will reach it on its own.
+        try:
+            if not same_domain(page.url, base_url):
+                continue
         except Exception:
             continue
-    return False
+
+        shot = await capture_screenshot(page, f"{url}#{interaction_states.state_name_for(node)}")
+        if not shot:
+            continue
+        states.append(
+            {
+                "name": interaction_states.state_name_for(node),
+                "selector": selector,
+                "label": label,
+                "screenshot": shot,
+                "url": page.url,
+            }
+        )
+        if len(states) >= limit:
+            break
+
+    # The page is put back before the caller takes its own capture, so the
+    # clone describes the state a visitor lands on and not the last menu.
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await page.wait_for_selector("body", timeout=5000)
+        await page.wait_for_timeout(800)
+    except Exception as e:
+        print(f"[Worker]   could not restore the page: {e}", file=sys.stderr, flush=True)
+
+    return states
 
 
 async def _capture_page_data(
-    page: Any, url: str, base_url: str, depth: int, capture_screenshots: bool
+    page: Any, url: str, base_url: str, depth: int, capture_screenshots: bool,
+    media_data: Optional[Dict[str, Any]] = None,
+    viewports: Optional[List[responsive.Viewport]] = None,
 ) -> Dict[str, Any]:
     """Capture all page data: title, html, links, forms, nav, images."""
     try:
@@ -577,24 +591,55 @@ async def _capture_page_data(
     except Exception:
         html = ""
 
-    screenshot_url = ""
+    # `page.content()` is the host document only, so a page that is mostly a
+    # map or a checkout widget arrives here as an empty div. The browser can
+    # still read the frames and shadow roots it rendered.
+    embedded = await embedded_content.collect_embedded(page)
+
+    widths = viewports or responsive.responsive(False)
+    # The desktop capture is the page's own screenshot, exactly as before, so
+    # everything downstream keeps working unchanged.
+    screenshot_file = ""
+    viewport_screenshots: Dict[str, Dict[str, Any]] = {}
     if capture_screenshots:
-        try:
-            ss = await page.screenshot(type="png")
-            screenshot_url = "data:image/png;base64," + base64.b64encode(ss).decode()
-        except Exception:
-            pass
+        for index, viewport in enumerate(widths):
+            shot = await capture_screenshot(page, url, viewport)
+            if not shot:
+                continue
+            if index == 0:
+                screenshot_file = shot
+            height = 0
+            try:
+                height = int(
+                    await page.evaluate("document.documentElement.scrollHeight") or 0
+                )
+            except Exception:
+                height = 0
+            viewport_screenshots[viewport.name] = {
+                "file": shot,
+                "width": viewport.width,
+                "height": height,
+            }
 
     links: List[str] = []
+    hash_routes: List[str] = []
     try:
         anchors = await page.query_selector_all("a[href]")
         for el in anchors:
             try:
                 href = await el.get_attribute("href")
-                if href and not href.startswith("#") and not href.startswith("javascript") and not href.startswith("mailto:"):
-                    full = urljoin(page.url, href)
-                    if same_domain(full, base_url):
-                        links.append(normalize(full))
+                if not href or href.startswith("javascript") or href.startswith("mailto:"):
+                    continue
+                # `#/pricing` is a page in a hash-routed app; `#section` is a
+                # jump inside this one. Only the first is a route to follow.
+                if href.startswith("#"):
+                    route = route_discovery.normalise_hash_route(href)
+                    if route:
+                        hash_routes.append(urljoin(page.url, route))
+                    continue
+                full = urljoin(page.url, href)
+                if same_domain(full, base_url):
+                    links.append(normalize(full))
             except Exception:
                 continue
     except Exception as e:
@@ -636,17 +681,18 @@ async def _capture_page_data(
     except Exception:
         pass
 
-    imgs: List[str] = []
-    try:
-        for img in await page.query_selector_all("img[src]"):
-            try:
-                src = await img.get_attribute("src")
-                if src:
-                    imgs.append(urljoin(url, src))
-            except Exception:
-                continue
-    except Exception:
-        pass
+    imgs: List[str] = list((media_data or {}).get("images", []))
+    if not imgs:
+        try:
+            for img in await page.query_selector_all("img[src]"):
+                try:
+                    src = await img.get_attribute("src")
+                    if src:
+                        imgs.append(urljoin(url, src))
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     parsed_url = urlparse(url)
     ppath = parsed_url.path.rstrip("/") or "/"
@@ -656,190 +702,90 @@ async def _capture_page_data(
         "path": ppath,
         "title": title,
         "html": html,
-        "screenshot": screenshot_url,
+        "embedded": embedded.to_json(),
+        "screenshot": "",
+        "screenshot_file": screenshot_file,
+        "states": [],
+        "viewport_screenshots": viewport_screenshots,
+        "layout_notes": responsive.layout_notes(viewport_screenshots),
         "links": list(set(links)),
+        "hash_routes": list(set(hash_routes)),
         "forms": forms,
         "navigation": nav,
         "images": imgs,
+        "videos": (media_data or {}).get("videos", []),
+        "media": (media_data or {}).get("media", {}),
+        "design": (media_data or {}).get("design", {}),
+        "meta": (media_data or {}).get("meta", {}),
         "depth": depth,
     }
 
 
-def _fallback_search_action(
-    interactive: List[Dict[str, Any]], title: str, base_url: str, page_url: str = ""
-) -> Optional[Dict[str, Any]]:
-    """Type into the page's search box when the model proposed nothing.
+async def _record_api(response: Any, capture: "clone_mock.Capture") -> None:
+    """Keep an API answer so the clone can replay it.
 
-    A model that answers with an empty action list still leaves the most
-    valuable interaction on the table: the site's own search. Deriving the
-    query from the page title (falling back to the domain label) keeps it
-    relevant to this site rather than a canned word.
+    The body is read on the spot because a Playwright response body is only
+    available before the page is closed. Anything unreadable, too large or not
+    JSON is simply not kept: a page still renders without its data, and a mock
+    layer full of error pages would be worse than none.
     """
-    if AUTH_URL_RE.search(page_url):
-        return None
-
-    # Only a field the page itself presents as search. Any other text input on
-    # an unknown page is as likely to be a login or signup box.
-    candidates = [
-        e for e in interactive
-        if e.get("kind") == "search-input" and not _looks_sensitive(e)
-    ]
-    if not candidates:
-        return None
-
-    words = re.findall(r"[^\W\d_]{3,}", title, re.UNICODE)
-    query = words[0] if words else ""
-    if not query:
-        host = urlparse(base_url).netloc.replace("www.", "")
-        query = host.split(".")[0] or "search"
-    return {
-        "type": "type",
-        "selector": candidates[0]["selector"],
-        "value": query,
-        "why": "fallback: site search",
-    }
-
-
-async def _llm_guided_explore(
-    page: Any,
-    llm_config: Optional[Dict[str, Any]],
-    url: str,
-    title: str,
-    base_url: str,
-    depth: int,
-    capture_screenshots: bool,
-    deadline_ts: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """Ask the LLM what to interact with, execute the actions, capture results.
-
-    Returns a list of virtual page dicts discovered through interaction
-    (e.g. search-result pages).
-    """
-    if not llm_config:
-        return []
-
-    # Extract interactive elements from the DOM
     try:
-        elements: List[Dict[str, Any]] = await page.evaluate(_EXTRACT_ELEMENTS_JS)
-    except Exception as e:
-        print(f"[Worker] Element extraction failed: {e}", file=sys.stderr, flush=True)
-        return []
-
-    if not elements:
-        return []
-
-    # Only show interactive elements (not plain nav links) to the LLM
-    interactive: List[Dict[str, Any]] = [e for e in elements if e.get("kind") != "nav-link"]
-    if not interactive:
-        return []
-
-    # Grab a snippet of page text so the LLM understands the site topic
-    try:
-        page_text: str = await page.inner_text("body")
-    except Exception:
-        page_text = ""
-
-    prompt = _build_exploration_prompt(title, url, interactive, page_text)
-    print(
-        f"[Worker] Asking LLM to explore {url} ({len(interactive)} interactive elements)",
-        file=sys.stderr, flush=True,
-    )
-
-    response_text = await _call_llm(llm_config, prompt)
-    actions = _parse_actions(response_text)
-    if not response_text:
-        print("[Worker] LLM returned no exploration response", file=sys.stderr, flush=True)
-    elif not actions:
-        print("[Worker] LLM suggested no actions", file=sys.stderr, flush=True)
-
-    if not actions:
-        fallback = _fallback_search_action(interactive, title, base_url, page.url)
-        if not fallback:
-            return []
-        print(
-            f"[Worker] Falling back to site search: {fallback['selector']} "
-            f"value='{fallback['value']}'",
-            file=sys.stderr, flush=True,
+        content_type = response.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            return
+        raw = await response.text()
+        if not raw:
+            return
+        capture.add(
+            method=response.request.method,
+            url=response.url,
+            status=response.status,
+            content_type=content_type,
+            raw=raw,
         )
-        actions = [fallback]
-    else:
-        print(f"[Worker] LLM suggested {len(actions)} actions", file=sys.stderr, flush=True)
-
-    # Let the LLM's actions navigate (search submit, etc.)
-    try:
-        await page.evaluate("window.__neutralize_nav = false")
     except Exception:
+        # Redirects, aborted requests and closed pages all land here.
         pass
 
-    original_url: str = page.url
-    virtual_pages: List[Dict[str, Any]] = []
-    seen_paths: set[str] = set()
 
-    on_auth_page = bool(AUTH_URL_RE.search(original_url))
-
-    for action in actions:
-        if action.get("type") == "type" and on_auth_page:
-            print(
-                f"[Worker] Skipping typing on auth page {original_url}",
-                file=sys.stderr, flush=True,
-            )
-            continue
-        if deadline_ts is not None and time.monotonic() > deadline_ts:
-            print("[Worker] Exploration budget spent, stopping", file=sys.stderr, flush=True)
-            break
-
-        reacted, new_url, desc = await _execute_action(page, action)
-        print(f"[Worker] Action: {desc} -> reacted={reacted}", file=sys.stderr, flush=True)
-
-        if not reacted:
-            continue
-
-        # The action produced content (search results, a filtered list, an
-        # opened panel). Capture it.
-        effective_url: str = new_url or page.url
-        if normalize(effective_url) == normalize(original_url):
-            # Client-side search: URL unchanged but DOM updated. Capture it
-            # under a synthetic path so the results are not lost.
-            p_url = urlparse(original_url)
-            query = action.get("value", "results")
-            effective_url = urlunparse((
-                p_url.scheme, p_url.netloc, p_url.path,
-                "", f"search={query}", "",
-            ))
-
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=10000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(2000)
-        await scroll_page(page)
-
-        page_data = await _capture_page_data(
-            page, effective_url, base_url, depth, capture_screenshots
-        )
-        raw_path = urlparse(effective_url).path.rstrip("/") or "/"
-        query_suffix = urlparse(effective_url).query
-        # Two searches on the same endpoint share a path; keep them distinct
-        # so later pages do not overwrite earlier ones.
-        page_data["path"] = f"{raw_path}?{query_suffix}" if query_suffix else raw_path
-        if page_data["path"] in seen_paths:
-            print(f"[Worker] Skipping duplicate virtual page {page_data['path']}", file=sys.stderr, flush=True)
-        else:
-            seen_paths.add(page_data["path"])
-            virtual_pages.append(page_data)
-            print(f"[Worker] Captured virtual page: {page_data['path']}", file=sys.stderr, flush=True)
-
-        # Navigate back for the next action
-        try:
-            await page.goto(original_url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(1000)
-        except Exception as e:
-            print(f"[Worker] Failed to navigate back: {e}", file=sys.stderr, flush=True)
-
-    return virtual_pages
+def _schedule_api_capture(response: Any, capture: "clone_mock.Capture") -> None:
+    """Start reading one response body, from a callback that cannot wait."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_record_api(response, capture))
+    _api_tasks.add(task)
+    task.add_done_callback(_api_tasks.discard)
 
 
-def _write_partial(output_file: Optional[str], pages: List[Dict[str, Any]]) -> None:
+# Every in-flight body read, so a crawl with thousands of responses does not
+# pile up thousands of tasks that nothing references.
+_api_tasks: "set[Any]" = set()
+
+
+async def _routes_from_manifest(context: Any, url: str, base_url: str) -> List[str]:
+    """Page URLs listed by a sitemap the crawl came across."""
+    try:
+        response = await context.request.get(url, timeout=MANIFEST_TIMEOUT_MS)
+        if not response.ok:
+            return []
+        text = await response.text()
+    except Exception as e:
+        print(f"[Worker] manifest fetch failed: {e}", file=sys.stderr, flush=True)
+        return []
+    # A manifest is a listing, not a page: at most a page or two of it is
+    # worth reading, and an unbounded read is how a crawl runs out of time.
+    return route_discovery.routes_from_manifest(
+        route_discovery.parse_sitemap(text[:MAX_MANIFEST_BYTES]), base_url
+    )
+
+
+def _write_partial(
+    output_file: Optional[str],
+    pages: List[Dict[str, Any]],
+    api: Optional["clone_mock.Capture"] = None,
+) -> None:
     """Persist what has been crawled so far.
 
     The parent kills this process when it overruns its budget, and stdout is
@@ -851,7 +797,9 @@ def _write_partial(output_file: Optional[str], pages: List[Dict[str, Any]]) -> N
     try:
         tmp = output_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(pages, fh)
+            # The same shape the crawl finishes with, so the parent can read
+            # a salvaged file and a complete run the same way.
+            json.dump({"pages": pages, "api": api.to_json() if api else {}}, fh)
         os.replace(tmp, output_file)
     except Exception as e:
         print(f"[Worker] Failed to write partial output: {e}", file=sys.stderr, flush=True)
@@ -867,8 +815,16 @@ async def crawl(
     budget: Optional[float] = None,
     output_file: Optional[str] = None,
     headless: Optional[bool] = None,
-) -> List[Dict[str, Any]]:
+    responsive_flag: bool = False,
+    capture_states: bool = False,
+) -> Dict[str, Any]:
     from playwright.async_api import async_playwright
+
+    # The crawl is strictly observational: load the page, wait it out, scroll
+    # to reveal lazy content, capture. `llm_config` is accepted for caller
+    # compatibility but deliberately unused — the crawler never clicks, types
+    # or submits anything, so the clone describes exactly what a visitor sees
+    # on the page itself.
 
     if headless is None:
         headless = CRAWLER_HEADLESS
@@ -892,20 +848,6 @@ async def crawl(
 
     visited: set[str] = set()
     pages: List[Dict[str, Any]] = []
-    explored_selectors = [
-        "button:not([disabled])",
-        "[role='button']",
-        "details > summary",
-        "[aria-expanded='false']",
-        ".accordion-button",
-        ".dropdown-toggle",
-        "[data-toggle]",
-        "[data-bs-toggle]",
-        ".nav-link",
-        ".menu-item",
-        ".tab",
-        "[role='tab']",
-    ]
 
     async with async_playwright() as p:
         # Headed by default: Cloudflare-style bot checks flag headless Chromium
@@ -924,12 +866,54 @@ async def crawl(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
+        # Synchronous in this version of Playwright, and awaited in newer
+        # ones. Awaiting it here raised before the crawl started.
         page.set_default_timeout(8000)
+        # Installed before the first navigation, so it sees the router's very
+        # first push and every request the app makes while it renders.
+        await page.add_init_script(route_recorder.ROUTE_RECORDER_JS)
+        # Resolved once for the whole crawl: the page is re-laid out at each
+        # width in turn for every capture.
+        viewports = responsive.responsive(bool(responsive_flag))
+        media = MediaCapture()
+        # Background requests that came back as a document, and the ones that
+        # turned out to be a route manifest.
+        document_requests: List[str] = []
+        manifest_requests: List[str] = []
+        # What the site's own API answered with, kept so the clone can read it.
+        api_capture = clone_mock.Capture(base_url=base_url)
+
+        def on_response(response: Any) -> None:
+            # Media capture is the first listener's job; this one only looks
+            # for routes and data, so it must not handle the body twice.
+            media.on_response(response)
+            try:
+                url = response.url
+                if response.request.resource_type not in ("xhr", "fetch", "document"):
+                    return
+                content_type = response.headers.get("content-type", "")
+                route = route_discovery.route_from_xhr(url, base_url, content_type)
+                if not route:
+                    return
+                if route_discovery.is_route_manifest(route):
+                    manifest_requests.append(route)
+                else:
+                    document_requests.append(route)
+                # Reading a body is async, and this callback is not: the
+                # answer is recorded in the background. The task is held
+                # because nothing else keeps it alive, and swept when it
+                # finishes, or a long crawl accumulates every response it
+                # ever saw.
+                _schedule_api_capture(response, api_capture)
+            except Exception:
+                # A response from a page that navigated away is unreadable.
+                pass
+
+        page.on("response", on_response)
+
         queue = [(start_url, 0)]
 
         while queue and len(pages) < max_pages:
-            # A fresh page costs a goto, scrolling and clicking; do not start
-            # one we cannot finish.
             if time_left() < 20:
                 print(
                     f"[Worker] Time budget spent after {len(pages)} pages, stopping early",
@@ -968,9 +952,6 @@ async def crawl(
 
             blocked = await wait_out_bot_check(page)
 
-            if await dismiss_consent(page):
-                await page.wait_for_timeout(2000)
-
             try:
                 txt = await page.inner_text("body")
                 if len(txt.strip()) < 100:
@@ -980,84 +961,89 @@ async def crawl(
 
             await scroll_page(page)
 
-            if depth < 2:
-                try:
-                    await _neutralize_navigation(page)
-                    clicked = await click_selectors(page, explored_selectors, max_clicks=8)
-                    if clicked:
-                        print(f"[Worker]   clicked {clicked} elements", file=sys.stderr, flush=True)
-                        await page.wait_for_timeout(1000)
-
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=3000)
-                    except Exception:
-                        pass
-                    await page.wait_for_timeout(500)
-                except Exception:
-                    pass
-
-            if normalize(page.url) != normalize(url):
-                # Exploration drifted off this URL; reload it so the capture
-                # below describes the page we queued, not wherever we landed.
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=goto_timeout)
-                    await page.wait_for_timeout(2000)
-                except Exception as e:
-                    print(f"[Worker] Failed to reload {url}: {e}", file=sys.stderr, flush=True)
-
-            # Capture the original page
-            page_data = await _capture_page_data(page, url, base_url, depth, capture_screenshots)
+            # Capture the page exactly as it rendered — no clicks, no typing,
+            # no navigation. The capture therefore always describes the page
+            # that was queued.
+            # Downloads are skipped when the crawl is short on time: the
+            # pages matter more than the files the network already missed.
+            design_data = await collect_design(page)
+            favicon = str(design_data.get("meta", {}).get("favicon") or "")
+            media_data = await collect_media(
+                page,
+                context,
+                media,
+                fetch_missing=time_left() > 60,
+                extra_images=[favicon],
+            )
+            media_data.update(design_data)
+            page_data = await _capture_page_data(
+                page, url, base_url, depth, capture_screenshots, media_data, viewports
+            )
             page_data["blocked"] = blocked
+            # Routes the app's own router used while it rendered. A client
+            # router that never navigates tells us nothing, which is the case
+            # for most pages, so this costs one evaluate and is usually empty.
+            recorded = await route_recorder.read_route_recorder(page)
+            pushed = route_discovery.record_push_state(recorded["pushes"])
+            page_data["pushed_routes"] = pushed
+
+            # The one acting part of the crawl, and only when asked for.
+            if capture_states:
+                page_data["states"] = await capture_interaction_states(
+                    page, url, base_url, interaction_states.MAX_STATES_PER_PAGE
+                )
             pages.append(page_data)
-            _write_partial(output_file, pages)
-            print(f"[Worker]   {len(pages)}/{max_pages} {page_data['path']} links={len(page_data['links'])}", file=sys.stderr, flush=True)
+            _write_partial(output_file, pages, api_capture)
+            print(
+                f"[Worker]   {len(pages)}/{max_pages} {page_data['path']} "
+                f"links={len(page_data['links'])} media={len(page_data['media'])}",
+                file=sys.stderr, flush=True,
+            )
 
-            # LLM-guided exploration: the model looks at the interactive
-            # elements, decides what to click/type (especially search boxes),
-            # and we capture any pages it discovers.
-            # Exploration costs a model call plus several interactions; skip
-            # it rather than have the whole crawl killed mid-page.
-            if llm_config and depth < 2 and len(pages) < max_pages and time_left() > 60:
-                try:
-                    exploration_pages = await _llm_guided_explore(
-                        page, llm_config, url, page_data["title"],
-                        base_url, depth, capture_screenshots,
-                        deadline_ts=(
-                            None if deadline_ts is None else deadline_ts - 15
-                        ),
-                    )
-                except Exception as e:
-                    print(f"[Worker] LLM exploration failed: {e}", file=sys.stderr, flush=True)
-                    exploration_pages = []
-
-                for ep in exploration_pages:
-                    if len(pages) >= max_pages:
-                        break
-                    pages.append(ep)
-                    _write_partial(output_file, pages)
-                    print(f"[Worker]   +virtual {ep['path']} (LLM exploration)", file=sys.stderr, flush=True)
-                    # Queue any new links the exploration revealed
-                    for link in ep.get("links", []):
-                        if link not in visited:
-                            queue.append((link, depth + 1))
-
-                # Make sure we are back on the original page
-                if page.url != url:
-                    try:
-                        await page.goto(url, wait_until="domcontentloaded", timeout=goto_timeout)
-                        await page.wait_for_timeout(1000)
-                    except Exception:
-                        pass
-
-            # Queue links from the original page
+            # Queue links from the page for further observation.
             for link in page_data["links"]:
                 if link not in visited:
                     queue.append((link, depth + 1))
 
+            # A hash-routed app never requests its other routes, so its own
+            # anchors are the only place they are written down.
+            for route in page_data.get("hash_routes", []):
+                identity = route_discovery.clean(route)
+                if identity not in visited:
+                    visited.add(identity)
+                    queue.append((route, depth + 1))
+            # A client router that navigated on its own already showed us the
+            # routes it uses.
+            for candidate in page_data.get("pushed_routes", []):
+                for absolute in route_discovery.merge_discovered(
+                    visited, [candidate], base_url, limit=1
+                ):
+                    queue.append((absolute, depth + 1))
+            # A framework that fetched a document asked for a page the crawler
+            # has not seen yet.
+            for absolute in route_discovery.merge_discovered(
+                visited, list(document_requests), base_url
+            ):
+                queue.append((absolute, depth + 1))
+
+            # A sitemap is the one document that lists a site's own routes.
+            for manifest_url in list(manifest_requests):
+                manifest_requests.remove(manifest_url)
+                routes = await _routes_from_manifest(context, manifest_url, base_url)
+                for absolute in route_discovery.merge_discovered(
+                    visited, routes, base_url
+                ):
+                    queue.append((absolute, depth + 1))
+
         await browser.close()
+        # The bodies being read when the crawl ended still have answers in
+        # them; waiting for them is the difference between a mock layer with
+        # the page's data and one that only caught what came back early.
+        if _api_tasks:
+            await asyncio.gather(*list(_api_tasks), return_exceptions=True)
         print(f"[Worker] Done. Total pages: {len(pages)}", file=sys.stderr, flush=True)
 
-    return pages
+    return cast(Dict[str, Any], {"pages": pages, "api": api_capture.to_json()})
 
 
 if __name__ == "__main__":
@@ -1073,6 +1059,8 @@ if __name__ == "__main__":
             data.get("budget"),
             data.get("output_file"),
             data.get("headless"),
+            data.get("responsive", False),
+            data.get("capture_states", False),
         )
     )
     print(json.dumps(result))

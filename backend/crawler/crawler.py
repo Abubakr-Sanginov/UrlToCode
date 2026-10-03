@@ -19,9 +19,34 @@ class CrawlPage:
     screenshot: str = ""
     status_code: int = 200
     links: List[str] = field(default_factory=list[str])
+    # Hash-routed pages (`#/pricing`) found on this page. The server never
+    # sees them, so they are not in `links`.
+    hash_routes: List[str] = field(default_factory=list[str])
+    # Routes the page's own router visited while it rendered (pushState).
+    pushed_routes: List[str] = field(default_factory=list[str])
     forms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
     navigation: List[Dict[str, str]] = field(default_factory=list[Dict[str, str]])
     images: List[str] = field(default_factory=list[str])
+    # {"src", "poster"} per <video>; either may be "" when unknown.
+    videos: List[Dict[str, str]] = field(default_factory=list[Dict[str, str]])
+    # Original media URL -> file name in crawler/media_store.MEDIA_DIR.
+    media: Dict[str, str] = field(default_factory=dict[str, str])
+    # Computed fonts/colors (bodyFont, headingFont, palette, fontLinks, ...).
+    design: Dict[str, Any] = field(default_factory=dict[str, Any])
+    # Head metadata: lang, description, ogImage, themeColor, favicon.
+    meta: Dict[str, str] = field(default_factory=dict[str, str])
+    # Full-page screenshot of the original, a file in the media store.
+    screenshot_file: str = ""
+    # States the page reveals when its own controls are used; only captured
+    # when the user asked for it, since it is the one acting part of a crawl.
+    states: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
+    # What lives inside frames and shadow roots, which the page's own markup
+    # does not contain.
+    embedded: Dict[str, Any] = field(default_factory=dict[str, Any])
+    # The same page captured at other widths, keyed by viewport name.
+    viewport_screenshots: Dict[str, Dict[str, Any]] = field(default_factory=dict[str, Dict[str, Any]])
+    # What the extra widths say about how the page reflows, for the prompt.
+    layout_notes: List[str] = field(default_factory=list[str])
     # True when the capture is a bot-check interstitial rather than the site.
     blocked: bool = False
     stylesheets: List[str] = field(default_factory=list[str])
@@ -35,6 +60,10 @@ class CrawlResult:
     pages: List[CrawlPage] = field(default_factory=list[CrawlPage])
     site_structure: Dict[str, Any] = field(default_factory=dict[str, Any])
     design_tokens: Dict[str, Any] = field(default_factory=dict[str, Any])
+    # What the site's own API answered with while it was being crawled, keyed
+    # "GET /api/products". A clone has no API behind it, so these are the only
+    # record of what the original pages actually loaded.
+    api: Dict[str, Any] = field(default_factory=dict[str, Any])
     error: Optional[str] = None
 
 
@@ -54,19 +83,25 @@ def _run_playwright_subprocess(
     timeout: int,
     capture_screenshots: bool = False,
     llm_config: Optional[Dict[str, Any]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    responsive: bool = False,
+    capture_states: bool = False,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
     """Run Playwright in a separate process.
 
     Returns `(pages, error)`; a non-None error explains why the worker
     produced nothing, so callers can surface a real reason instead of
     reporting a silent zero-page crawl.
     """
-    # LLM-guided exploration adds a model call plus several interactions per
-    # shallow page, which can take 30-90s on slow endpoints. Budget for it so
-    # heavy SPAs like YouTube do not get killed mid-exploration.
-    per_page_budget = max(timeout * 3, 90)
-    if llm_config:
-        per_page_budget += 90
+    # LLM-guided exploration is gone: the crawl is strictly observational, so
+    # a page needs a goto, a couple of waits and a scroll — nothing more.
+    # Capturing a page at three widths triples the screenshot time, so the
+    # per-page budget has to grow with it or a responsive crawl is cut off
+    # half way through the first page.
+    per_page_budget = max(timeout * 3, 90) * (3 if responsive else 1)
+    if capture_states:
+        # Each state reloads the page before and after, so the capture is the
+        # slowest part of the crawl by a wide margin.
+        per_page_budget *= 2
     crawl_budget = min(per_page_budget * max_pages, MAX_CRAWL_SECONDS)
     # The worker stops itself first and prints what it has; this is only the
     # backstop for a wedged browser process.
@@ -86,6 +121,8 @@ def _run_playwright_subprocess(
         "llm_config": llm_config,
         "budget": crawl_budget,
         "output_file": partial_path,
+        "responsive": responsive,
+        "capture_states": capture_states,
     })
 
     def read_partial() -> List[Dict[str, Any]]:
@@ -94,9 +131,33 @@ def _run_playwright_subprocess(
                 data: Any = json.load(fh)
         except Exception:
             return []
+        if isinstance(data, dict):
+            data = cast(Dict[str, Any], data).get("pages")
         if not isinstance(data, list):
             return []
         return [item for item in cast(List[Any], data) if isinstance(item, dict)]
+
+    def split(payload: Any) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Pages and captured API from whatever the worker printed.
+
+        A bare list is the older shape and still accepted: a partially written
+        file from an interrupted crawl is a list, and those pages are still
+        worth keeping even though no answers came with them.
+        """
+        if isinstance(payload, dict):
+            found = cast(Dict[str, Any], payload)
+            raw_pages = found.get("pages")
+            raw_api = found.get("api")
+            pages: List[Dict[str, Any]] = [
+                cast(Dict[str, Any], item)
+                for item in cast(List[Any], raw_pages or [])
+                if isinstance(item, dict)
+            ]
+            api: Dict[str, Any] = cast(Dict[str, Any], raw_api) if isinstance(raw_api, dict) else {}
+            return pages, api
+        if isinstance(payload, list):
+            return [item for item in cast(List[Any], payload) if isinstance(item, dict)], {}
+        return [], {}
 
     try:
         # Parameters go in over stdin: they carry the API key, and a command
@@ -115,27 +176,28 @@ def _run_playwright_subprocess(
             salvaged = read_partial()
             if salvaged:
                 print(f"[Crawler] Worker crashed; using {len(salvaged)} salvaged pages")
-                return salvaged, None
+                return salvaged, {}, None
             lines = (result.stderr or result.stdout or "").strip().splitlines()
             reason = lines[-1][:300] if lines else "no output"
-            return [], f"Playwright worker exited with code {result.returncode}: {reason}"
-        return json.loads(result.stdout), None
+            return [], {}, f"Playwright worker exited with code {result.returncode}: {reason}"
+        pages, api = split(json.loads(result.stdout))
+        return pages, api, None
     except subprocess.TimeoutExpired:
         salvaged = read_partial()
         if salvaged:
             print(f"[Crawler] Worker timed out; using {len(salvaged)} salvaged pages")
-            return salvaged, None
-        return [], (
+            return salvaged, {}, None
+        return [], {}, (
             "The site took too long to crawl and no page finished loading. "
             "Try a smaller page limit, or a site that loads faster."
         )
     except (ValueError, KeyError) as e:
         salvaged = read_partial()
         if salvaged:
-            return salvaged, None
-        return [], f"Playwright worker returned invalid data: {e}"
+            return salvaged, {}, None
+        return [], {}, f"Playwright worker returned invalid data: {e}"
     except Exception as e:
-        return [], f"Playwright subprocess error: {e}"
+        return [], {}, f"Playwright subprocess error: {e}"
     finally:
         try:
             os.remove(partial_path)
@@ -151,6 +213,8 @@ class SiteCrawler:
         timeout: int = 15,
         capture_screenshots: bool = False,
         llm_config: Optional[Dict[str, Any]] = None,
+        responsive: bool = False,
+        capture_states: bool = False,
     ):
         self.max_pages = max_pages
         self.max_depth = max_depth
@@ -159,10 +223,16 @@ class SiteCrawler:
         # path never sends them to a model, so capturing them by default just
         # burns crawl time and memory.
         self.capture_screenshots = capture_screenshots
-        # If provided, the crawler asks the model what to interact with on
-        # each shallow page (search boxes, tabs, accordions) and captures the
-        # resulting content — the AI "looks" at the page instead of blindly
-        # clicking a fixed selector list.
+        # Capture each page at phone, tablet and desktop widths, so the clone
+        # is built from what visitors actually see rather than from the
+        # desktop layout alone. Off unless asked for: it triples capture time.
+        self.responsive = responsive
+        # Click the page's own controls and photograph what they reveal. The
+        # only part of the crawl that acts rather than watches, so it has to
+        # be asked for by name.
+        self.capture_states = capture_states
+        # Accepted for caller compatibility; the crawl never clicks, types or
+        # submits anything, so no model is consulted during exploration.
         self.llm_config = llm_config
         self._progress_callback: Optional[ProgressCallback] = None
 
@@ -199,10 +269,10 @@ class SiteCrawler:
 
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        await self._report_progress("Starting interactive crawl...", 0, self.max_pages)
+        await self._report_progress("Starting crawl (observe only)...", 0, self.max_pages)
 
         try:
-            page_dicts, worker_error = await asyncio.get_event_loop().run_in_executor(
+            page_dicts, api, worker_error = await asyncio.get_event_loop().run_in_executor(
                 None,
                 _run_playwright_subprocess,
                 start_url,
@@ -211,6 +281,8 @@ class SiteCrawler:
                 self.timeout,
                 self.capture_screenshots,
                 self.llm_config,
+                self.responsive,
+                self.capture_states,
             )
         except Exception as e:
             return CrawlResult(base_url=base_url, error=f"Crawl failed: {e}")
@@ -227,9 +299,20 @@ class SiteCrawler:
                 html=pd["html"],
                 screenshot=pd.get("screenshot", ""),
                 links=pd.get("links", []),
+                hash_routes=pd.get("hash_routes", []),
+                pushed_routes=pd.get("pushed_routes", []),
+                viewport_screenshots=pd.get("viewport_screenshots", {}),
+                layout_notes=pd.get("layout_notes", []),
+                states=pd.get("states", []),
+                embedded=pd.get("embedded", {}),
                 forms=pd.get("forms", []),
                 navigation=pd.get("navigation", []),
                 images=pd.get("images", []),
+                videos=pd.get("videos", []),
+                media=pd.get("media", {}),
+                design=pd.get("design", {}),
+                meta=pd.get("meta", {}),
+                screenshot_file=pd.get("screenshot_file", ""),
                 blocked=bool(pd.get("blocked", False)),
                 depth=pd.get("depth", 0),
             ))
@@ -243,11 +326,30 @@ class SiteCrawler:
         site_structure = self._build_site_structure(pages, base_url)
         design_tokens = self._extract_design_tokens(pages)
 
+        if api:
+            print(f"[Crawler] Captured {len(api)} API responses", flush=True)
+
+        if not pages:
+            # Zero pages with no error reported is not a success: every
+            # navigation failed and the worker had nothing to say about it.
+            # Reported as a failure so the caller stops here, rather than
+            # paying a model to invent a page for a site that was never
+            # reached.
+            return CrawlResult(
+                base_url=base_url,
+                error=(
+                    f"Could not load {base_url}. The site did not respond - the "
+                    "address may be wrong, or the site may be down or refusing "
+                    "connections."
+                ),
+            )
+
         return CrawlResult(
             base_url=base_url,
             pages=pages,
             site_structure=site_structure,
             design_tokens=design_tokens,
+            api=api,
         )
 
     def _build_site_structure(self, pages: List[CrawlPage], base_url: str) -> Dict[str, Any]:
@@ -267,6 +369,25 @@ class SiteCrawler:
         return structure
 
     def _extract_design_tokens(self, pages: List[CrawlPage]) -> Dict[str, Any]:
+        """Site-wide fonts and colors.
+
+        The browser's computed styles say what the site really renders with;
+        scraping the markup for "color:" only sees inline styles, so it is
+        the fallback for captures without them.
+        """
+        rendered = next((page.design for page in pages if page.design), None)
+        if rendered:
+            fonts = [
+                font
+                for font in (rendered.get("bodyFont"), rendered.get("headingFont"))
+                if font
+            ]
+            return {
+                "colors": list(rendered.get("palette", []))[:20],
+                "fonts": list(dict.fromkeys(fonts)),
+                "fontLinks": list(rendered.get("fontLinks", [])),
+            }
+
         colors: List[str] = []
         fonts: List[str] = []
         for page in pages[:5]:
