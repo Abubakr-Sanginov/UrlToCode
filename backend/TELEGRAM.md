@@ -126,6 +126,66 @@ a stranger cannot attach a stranger's conversation to somebody's account.
 
 ---
 
+## Paying in Stars
+
+Buying a plan is a two-step dance, and both halves are on the server.
+
+1. The Mini App asks `POST /api/telegram/invoice` for a link. It sends what
+   Telegram signed into the page, in the `X-Telegram-Auth` header. A header
+   rather than the body, so nothing that can put a string in a URL can
+   substitute one.
+2. The Mini App hands that link to `Telegram.WebApp.openInvoiceLink`. The
+   payment screen is Telegram's, drawn by Telegram. A screen drawn by this
+   app would be one that could be edited.
+3. Telegram calls back twice. `pre_checkout_query` must be answered within
+   ten seconds, or the person is shown an error they did nothing to cause.
+   Then `successful_payment` arrives and the plan changes.
+
+**The invoice payload is signed.** It carries the account, the plan and a
+nonce, HMAC'd. Nothing is trusted in a payment update that is not one this
+server issued: `read_invoice` returns `None` for a tampered payload, one
+signed with another secret, one older than an hour, or one naming a plan
+that does not exist.
+
+**The charge id is the primary key of `payments`.** Telegram repeats a
+webhook until it is answered, so the same payment arrives more than once.
+Recording it first and raising the plan second means a repeat is recorded
+once — and if the process dies between the two, the payment shows as unpaid
+rather than the plan being free.
+
+```bash
+curl https://your-domain.example/api/telegram/tariff
+```
+
+Two numbers per plan: what the buyer pays in Stars, and what arrives after
+the 30%.
+
+---
+
+## Deep links into a project
+
+```
+/start project_<run-id>
+```
+
+puts `project_<run-id>` in the button's `start_param`, and the Mini App opens
+that project instead of its front door. The prefix stays on, because one
+parameter will carry several kinds of link and the app has to tell them
+apart.
+
+The id is checked before it is forwarded — 40 characters, letters, digits,
+`-` and `_`. It came out of a Telegram message and the Mini App is open to
+anyone with a link; passing it on unfiltered would hand a crafted string to
+the server that has to look it up.
+
+Send one with a normal message:
+
+```
+https://t.me/YourBot?start=project_abc123
+```
+
+---
+
 ## Where things are
 
 | | |
@@ -147,13 +207,8 @@ a stranger cannot attach a stranger's conversation to somebody's account.
 
 ## What is not built yet
 
-* **Stars payments.** `STAR_PRICES` in `accounts.py` holds the figures and
-  `announce_ready` is the notification shape a paid run will use, but
-  nothing calls `createInvoiceLink`. The rate and the 30% commission are
-  still unconfirmed — see the note at the top of that file.
-* **Deep links into a particular project.** The button currently opens the
-  app at the root. `/start project_<run-id>` would open that project, and
-  `start_param` is already arriving in `initDataUnsafe`.
+Nothing on this list is half done. Each is either there or absent.
+
 * **A reply keyboard.** Someone can only reach the app by tapping the
-  button on the `/start` reply. That is fine for now and is one line of
+  button on the `/start` reply. That is fine, and is one line of
   `reply_markup` to change.

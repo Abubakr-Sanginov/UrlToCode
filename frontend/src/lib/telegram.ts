@@ -21,6 +21,8 @@ export interface TelegramWebApp {
   expand(): void;
   close(): void;
   openLink(url: string): void;
+  /** Opens the Telegram payment sheet. The only way Stars can be taken. */
+  openInvoiceLink(url: string): void;
   BackButton?: { show(): void; hide(): void; onClick(cb: () => void): void };
   MainButton?: {
     setText(text: string): void;

@@ -1,6 +1,7 @@
 import { useAccount } from "../../hooks/useAccount";
 import { useAccountUi } from "../../store/account-ui-store";
 import { adminToken } from "../../lib/admin";
+import { PlansPanel } from "./PlansPanel";
 
 /**
  * The account behind the icon strip's avatar: the address, the plan, what
@@ -57,6 +58,8 @@ export function AccountPanel() {
               )}
             </>
           )}
+
+          {usage?.tier === "free" && <PlansPanel currentTier="free" />}
 
           <button
             type="button"

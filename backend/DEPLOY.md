@@ -200,10 +200,16 @@ look like an LLM problem.
 
 ---
 
-## What the bot does not do yet
+## What is built
 
-* **Payments.** `STAR_PRICES` and the tariff endpoint are in place;
-  `createInvoiceLink` is not called. Nobody can pay yet.
-* **Deep links.** The button opens the app at the root rather than at a
-  particular project. `/start project_<run-id>` would fix that, and
-  `start_param` is already arriving.
+* **Sign in from the Mini App**, with no email and no password. Checked
+  against the bot token on the server.
+* **Buying a plan in Stars.** `POST /api/telegram/invoice` for a link,
+  `openInvoiceLink` for the payment, and the plan changes when the signed
+  webhook says so.
+* **Deep links.** `/start project_<run-id>` opens that project.
+* **"Your clone is ready"**, to people who pressed `/start` and nobody else.
+
+Still absent: nothing is stubbed. There is no `createInvoiceLink` left
+uncalled and no notification only the tests can reach — both were wired
+after being found disconnected.

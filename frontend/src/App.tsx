@@ -25,6 +25,9 @@ import {
 // import TipLink from "./components/messages/TipLink";
 import { useAppStore } from "./store/app-store";
 import { useProjectStore } from "./store/project-store";
+import { openProject } from "./lib/accounts";
+import { GENERATED_FILE_PREFIX } from "./lib/projectFiles";
+import { startProject } from "./lib/payments";
 import { useDesignSystems } from "./hooks/useDesignSystems";
 import {
   buildSelectedElementInstruction,
@@ -335,7 +338,12 @@ function App() {
   // a project opens exactly as the run that made it did.
   const pendingProject = useAccountUi((state) => state.pendingProject);
   const takePendingProject = useAccountUi((state) => state.takePendingProject);
+  const setPendingProject = useAccountUi((state) => state.setPendingProject);
   const lastOpenedProject = useRef<Record<string, string> | null>(null);
+  // Which project a `/start` deep link has already opened. Telegram leaves
+  // start_param in place for the life of the window, so without this every
+  // reload pulls the person back out of what they are doing.
+  const deepLinkedTo = useRef<string | null>(null);
   // The importer is rebuilt on every render, so it is reached through a
   // ref: naming it as a dependency would re-load the project each time
   // anything else changed.
@@ -353,6 +361,48 @@ function App() {
       }
     }
   }, [pendingProject, takePendingProject]);
+
+  // `/start project_<id>` from the bot opens that project rather than the
+  // front door. Once only: Telegram keeps start_param in place for as long
+  // as the Mini App is open, and a reload should not yank somebody back out
+  // of whatever they are working on.
+  useEffect(() => {
+    const runId = startProject();
+    if (!runId || deepLinkedTo.current === runId) return;
+    deepLinkedTo.current = runId;
+    // The account has to exist first. Inside Telegram that means the
+    // Mini App sign-in, and asking for a project before it has landed would
+    // be asking with somebody else's cookie.
+    const ready = window.setTimeout(() => {
+      void openProject(runId).then(
+        (project) => {
+          const generatedFiles: Record<string, string> = {};
+          const code: Record<string, string> = {};
+          for (const [key, content] of Object.entries(project.code)) {
+            if (key.startsWith(GENERATED_FILE_PREFIX)) {
+              generatedFiles[key.slice(GENERATED_FILE_PREFIX.length)] = content;
+            } else {
+              code[key] = content;
+            }
+          }
+          useCloneStore.getState().setCloneSource({
+            baseUrl: project.baseUrl,
+            runId: project.runId,
+            generatedFiles,
+          });
+          setPendingProject(code);
+        },
+        (cause: unknown) => {
+          // Most often: the project is not theirs. The server decides that,
+          // and saying so quietly is better than opening somebody's work.
+          toast.error(
+            cause instanceof Error ? cause.message : "That project could not be opened."
+          );
+        }
+      );
+    }, 1200);
+    return () => window.clearTimeout(ready);
+  }, [setPendingProject]);
 
   // Functions
   const reset = () => {

@@ -16,8 +16,10 @@ file loses one of them.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import math
 import os
 import secrets
@@ -25,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import db
 from db import Database
@@ -249,6 +251,15 @@ CREATE TABLE IF NOT EXISTS telegram_links (
     FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS payments (
+    charge_id TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL,
+    tier TEXT NOT NULL,
+    stars INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS projects_by_owner ON projects (owner_id);
 """
 
@@ -315,6 +326,15 @@ CREATE TABLE IF NOT EXISTS telegram_links (
     chat_id TEXT,
     username TEXT NOT NULL DEFAULT '',
     updated_at DOUBLE PRECISION NOT NULL,
+    FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    charge_id TEXT PRIMARY KEY,
+    owner_id BIGINT NOT NULL,
+    tier TEXT NOT NULL,
+    stars BIGINT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
     FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
 );
 
@@ -718,6 +738,123 @@ def telegram_chat_for(account: Account) -> Optional[str]:
             (account.id,),
         ).fetchone()
     return None if row is None else str(row["chat_id"])
+
+
+# How long an invoice stays payable. Telegram holds the payment screen open
+# and a person walks away from it; this is generous rather than tight, and
+# the signature is checked as well as the age.
+INVOICE_TTL_SECONDS = 60 * 60
+
+
+def sign_invoice(owner_id: int, tier: str, secret: str) -> str:
+    """A short note saying what is being paid for, and who for.
+
+    Sent to Telegram as the invoice payload and handed back when the
+    payment lands. It has to carry its own proof because the only thing
+    standing between this server and a forged "they paid for studio" is
+    the signature on it.
+
+    Signed rather than encrypted, so nothing here is secret from Telegram -
+    it has to carry it back to us. What matters is that a third party
+    cannot change a single character of it.
+    """
+    body = json.dumps(
+        {
+            "owner": owner_id,
+            "tier": tier,
+            "issued": int(time.time()),
+            "nonce": secrets.token_urlsafe(9),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    signature = hmac.new(
+        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"{base64.urlsafe_b64encode(body.encode()).decode()}.{signature}"
+
+
+def read_invoice(payload: str, secret: str) -> Optional[Dict[str, Any]]:
+    """What an invoice says, if it says anything at all.
+
+    Every part of it is checked: the signature, that it was signed rather
+    than guessed, and that it is not older than an hour. Returning None for
+    anything doubtful keeps the caller from having to remember which of
+    these it did.
+    """
+    encoded, _, signature = (payload or "").partition(".")
+    if not encoded or not signature:
+        return None
+    try:
+        body = base64.urlsafe_b64decode(encoded.encode()).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    expected = hmac.new(
+        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return None
+    try:
+        claim = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(claim, dict):
+        return None
+    try:
+        issued = int(claim.get("issued", 0))
+    except (TypeError, ValueError):
+        return None
+    if issued <= 0 or time.time() - issued > INVOICE_TTL_SECONDS:
+        return None
+    if claim.get("tier") not in STAR_PRICES:
+        return None
+    return cast(Dict[str, Any], claim)
+
+
+def record_payment(
+    charge_id: str, owner_id: int, tier: str, stars: int
+) -> bool:
+    """Note a payment and raise the plan. False if it was already counted.
+
+    The charge id is the primary key, so the same payment arriving twice -
+    and Telegram does repeat a webhook - is recorded once. Recording before
+    granting is what makes that true: if the process dies between the two,
+    the plan is not raised and the payment is visible as unpaid rather than
+    paid for nothing.
+    """
+    _ready()
+    with _connect() as conn:
+        try:
+            conn.insert(
+                "INSERT INTO payments (charge_id, owner_id, tier, stars, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (charge_id, owner_id, tier, stars, time.time()),
+            )
+        except db.integrity_error():
+            return False
+        conn.execute(
+            "UPDATE accounts SET tier = ? WHERE id = ?", (tier, owner_id)
+        )
+    return True
+
+
+def payments_of(account: Account) -> List[Dict[str, Any]]:
+    _ready()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT charge_id, tier, stars, created_at FROM payments"
+            " WHERE owner_id = ? ORDER BY created_at DESC",
+            (account.id,),
+        ).fetchall()
+    return [
+        {
+            "chargeId": str(row["charge_id"]),
+            "tier": str(row["tier"]),
+            "stars": int(row["stars"]),
+            "createdAt": float(row["created_at"]),
+        }
+        for row in rows
+    ]
 
 
 def share_by_token(token: str) -> Optional[Dict[str, Any]]:
