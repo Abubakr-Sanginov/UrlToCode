@@ -746,6 +746,26 @@ def telegram_chat_for(account: Account) -> Optional[str]:
 INVOICE_TTL_SECONDS = 60 * 60
 
 
+def _invoice_signature(body: str, secret: str) -> str:
+    """A short proof that this body was written here.
+
+    Sixteen bytes of HMAC, base64url encoded - 22 characters rather than the
+    64 that hexdigest() gives.
+
+    The length is not cosmetic. Telegram refuses a `payload` over 128 bytes
+    outright, answering INVOICE_PAYLOAD_INVALID, and a full hex signature
+    made the whole thing 161. The ceiling is nowhere in this module: nothing
+    about signing says how long the result has to be, so the only place it
+    can be enforced is a test - see test_invoice_payload_fits_in_telegram.
+
+    Truncating to 16 bytes leaves 128 bits of the digest, which is what an
+    HMAC is for. The rest of the 256 bits guards against a second class of
+    attack that does not apply here.
+    """
+    digest = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256)
+    return base64.urlsafe_b64encode(digest.digest()[:16]).decode().rstrip("=")
+
+
 def sign_invoice(owner_id: int, tier: str, secret: str) -> str:
     """A short note saying what is being paid for, and who for.
 
@@ -757,21 +777,22 @@ def sign_invoice(owner_id: int, tier: str, secret: str) -> str:
     Signed rather than encrypted, so nothing here is secret from Telegram -
     it has to carry it back to us. What matters is that a third party
     cannot change a single character of it.
+
+    Keep it inside Telegram's 128-byte ceiling for `payload`. The parts are
+    chosen for that: no field name longer than it has to be, and a nonce
+    short enough to be worth having.
     """
     body = json.dumps(
         {
             "owner": owner_id,
             "tier": tier,
             "issued": int(time.time()),
-            "nonce": secrets.token_urlsafe(9),
+            "nonce": secrets.token_urlsafe(6),
         },
         sort_keys=True,
         separators=(",", ":"),
     )
-    signature = hmac.new(
-        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    return f"{base64.urlsafe_b64encode(body.encode()).decode()}.{signature}"
+    return f"{base64.urlsafe_b64encode(body.encode()).decode()}.{_invoice_signature(body, secret)}"
 
 
 def read_invoice(payload: str, secret: str) -> Optional[Dict[str, Any]]:
@@ -789,9 +810,7 @@ def read_invoice(payload: str, secret: str) -> Optional[Dict[str, Any]]:
         body = base64.urlsafe_b64decode(encoded.encode()).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return None
-    expected = hmac.new(
-        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    expected = _invoice_signature(body, secret)
     if not hmac.compare_digest(expected, signature):
         return None
     try:

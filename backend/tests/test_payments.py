@@ -65,6 +65,28 @@ def telegram_ok(monkeypatch):
 
 
 class TestTheSignedInvoice:
+    def test_invoice_payload_fits_in_telegram(self):
+        """The ceiling Telegram imposes, which nothing in the code states.
+
+        `payload` over 128 bytes is refused outright with
+        INVOICE_PAYLOAD_INVALID and the invoice never reaches the person who
+        clicked buy. It cost a live payment to find out: a full hex HMAC
+        signature is 64 characters, which put this at 161.
+
+        Checked on the worst case rather than a typical one - the largest
+        tier name, the largest owner id, and a hundred fresh payloads, since
+        the nonce is random and a single sample could sit a byte under.
+        """
+        biggest = max(
+            len(accounts_module.sign_invoice(999_999_999, tier, SECRET))
+            for tier in accounts_module.STAR_PRICES
+        )
+        for _ in range(100):
+            payload = accounts_module.sign_invoice(999_999_999, "studio", SECRET)
+            assert len(payload.encode("utf-8")) <= 128, payload
+
+        assert biggest <= 128, f"{biggest} bytes"
+
     def test_it_says_who_and_what(self):
         payload = accounts_module.sign_invoice(7, "pro", SECRET)
 

@@ -31,22 +31,34 @@ const NAMES: Record<string, string> = {
 export function SignInDialog() {
   const { usage } = useAccount();
   const [providers, setProviders] = useState<string[]>([]);
-  // Nothing configured, or the list could not be fetched. A person staring at
-  // an empty box has no idea whether signing in is possible here at all.
-  const [failed, setFailed] = useState(false);
+  // Why there are no buttons, when there are none. Two causes that look
+  // identical from outside and need opposite fixes: a server with no keys
+  // set, and a request that never arrived. Only the second is worth telling
+  // somebody about in detail, and it needs to be visible rather than hidden
+  // behind a polite message that could mean either.
+  const [problem, setProblem] = useState<{
+    kind: "not-configured" | "unreachable";
+    detail: string;
+  } | null>(null);
 
   // An error the provider sent back with: the round trip leaves the page,
   // so there is nothing left in memory to show it from.
   const [returned, setReturned] = useState("");
 
   useEffect(() => {
-    void listProviders().then(
-      (list) => {
-        setProviders(list);
-        setFailed(list.length === 0);
-      },
-      () => setFailed(true)
-    );
+    void listProviders().then((result) => {
+      if (result.kind === "ready") {
+        setProviders(result.providers);
+        return;
+      }
+      setProblem({
+        kind: result.kind,
+        detail:
+          result.kind === "unreachable"
+            ? result.detail
+            : "the server has no provider keys set",
+      });
+    });
     const fromUrl = new URLSearchParams(window.location.search).get("signInError");
     if (fromUrl) {
       setReturned(fromUrl);
@@ -71,10 +83,21 @@ export function SignInDialog() {
           </p>
         )}
 
-        {failed ? (
-          <p className="mt-4 rounded-lg border border-border p-3 text-xs leading-5 text-muted-foreground">
-            Signing in is not available right now. Please try again later.
-          </p>
+        {problem ? (
+          <div className="mt-4 rounded-lg border border-border p-3 text-xs leading-5 text-muted-foreground">
+            <p>
+              {problem.kind === "not-configured"
+                ? "Signing in has not been set up on this server yet. Come back later."
+                : "Could not reach the server to ask which providers are available."}
+            </p>
+            {/* The detail is what turns this from a dead end into a
+                diagnosis: it names the URL that failed or the status that
+                came back, which is the difference between "something is
+                wrong" and "this browser is running last month's build". */}
+            <p className="mt-1 break-all font-mono text-[10px] opacity-70">
+              {problem.detail}
+            </p>
+          </div>
         ) : (
           <div className="mt-4 space-y-2">
             {providers.map((provider) => (
