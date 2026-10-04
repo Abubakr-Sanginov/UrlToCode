@@ -306,25 +306,43 @@ async def _telegram_call(method: str, payload: Dict[str, Any]) -> Optional[Dict[
 
     A single place for the token, the address and the network, so every
     caller handles failure the same way instead of deciding for itself.
+
+    A refusal is logged with Telegram's own words. Telegram always says why
+    — "bot can't initiate conversation with a user", "chat not found" — and
+    throwing that away turns a one-line answer into a guessing game: the
+    caller only sees that something failed, and every failure looks the same
+    from the outside.
     """
     token = bot_token()
     if not telegram_auth.is_bot_token_usable(token):
+        logger.warning("Telegram call %s refused: no usable bot token here.", method)
         return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(f"{TELEGRAM_API}/bot{token}/{method}", json=payload)
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning("Telegram call %s could not be made: %s", method, exc)
         return None
     if response.status_code != 200:
+        logger.warning(
+            "Telegram call %s answered HTTP %s: %s",
+            method,
+            response.status_code,
+            response.text[:200],
+        )
         return None
     try:
         answer = response.json()
     except ValueError:
+        logger.warning("Telegram call %s answered with something that is not JSON.", method)
         return None
     # Telegram answers 200 with ok:false for a refused request, and treating
     # that as success is how a refused invoice becomes a link that opens an
     # error page.
-    return answer if answer.get("ok") else None
+    if not answer.get("ok"):
+        logger.warning("Telegram refused %s: %s", method, answer.get("description"))
+        return None
+    return answer
 
 
 @router.post("/pay-link")
