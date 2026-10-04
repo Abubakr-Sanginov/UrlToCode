@@ -31,10 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth \
 # Copy the current directory contents into the container at /app
 COPY ./ /app/
 
-# Start under a virtual display; set CRAWLER_HEADLESS=1 to opt out of the
-# headed crawler instead.
-ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1366x768x24"]
-# Shell form so ${PORT} expands. Hosts such as Railway pick the port per
-# deployment and health-check that one; a hard-coded 7001 answers a health
-# check nobody is listening to.
+RUN chmod +x /app/start.sh
+
+# start.sh runs Xvfb and the application. It is not `xvfb-run`, which hangs
+# here: that wrapper waits for a SIGUSR1 that never reaches it as PID 1, so
+# uvicorn never starts and the platform finds no open port.
+ENTRYPOINT ["/app/start.sh"]
+# Shell form so ${PORT} expands. Hosts such as Render and Railway pick the
+# port per deployment and health-check that one; a hard-coded 7001 answers a
+# health check nobody is listening to.
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-7001}
