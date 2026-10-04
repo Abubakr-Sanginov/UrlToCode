@@ -2,41 +2,51 @@ import { useEffect, useState } from "react";
 import { FaGithub } from "react-icons/fa";
 import { FcGoogle } from "react-icons/fc";
 import { useAccount } from "../hooks/useAccount";
-import { useAccountUi } from "../store/account-ui-store";
 import { HTTP_BACKEND_URL } from "../config";
 import { listProviders } from "../lib/oauth";
 
-const LABEL = "text-sm font-medium text-foreground";
 const HINT = "mt-1 text-xs text-muted-foreground";
-const INPUT =
-  "mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm";
+
+const NAMES: Record<string, string> = {
+  google: "Google",
+  github: "GitHub",
+};
 
 /**
  * Signing in, and what the account gets.
  *
- * The limits are shown before signing up, not discovered afterwards: a
- * free account that can keep one project and run one clone a day is worth
- * signing up for, and worth walking away from if that was not the intent.
+ * Only through Google and GitHub. There is no password form to fall back on,
+ * which is the point: a password is something people reuse, reuse again, and
+ * forget, and a free account that can run one clone a day is not worth
+ * storing a credential for.
+ *
+ * Nothing calls back into this page when it succeeds. The round trip leaves
+ * for the provider and comes back through a redirect, so the app reloads and
+ * reads the session for itself.
+ *
+ * The limits are shown before signing up, not discovered afterwards: a free
+ * account is worth signing up for, and worth walking away from if that was
+ * not the intent.
  */
-export function SignInDialog({ onSignedIn }: { onSignedIn?: () => void }) {
-  const { signIn, usage, loading, error } = useAccount();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  // Which form to open on is the caller's decision, not the dialog's: the
-  // button that opened it is labelled "Sign in", so the form has to be the
-  // one that signs in. The dialog is remounted each time it opens, so this
-  // reads the mode fresh rather than keeping the last one.
-  const [isNew, setIsNew] = useState(
-    useAccountUi.getState().signInMode === "register"
-  );
+export function SignInDialog() {
+  const { usage } = useAccount();
   const [providers, setProviders] = useState<string[]>([]);
+  // Nothing configured, or the list could not be fetched. A person staring at
+  // an empty box has no idea whether signing in is possible here at all.
+  const [failed, setFailed] = useState(false);
 
   // An error the provider sent back with: the round trip leaves the page,
   // so there is nothing left in memory to show it from.
   const [returned, setReturned] = useState("");
 
   useEffect(() => {
-    void listProviders().then(setProviders);
+    void listProviders().then(
+      (list) => {
+        setProviders(list);
+        setFailed(list.length === 0);
+      },
+      () => setFailed(true)
+    );
     const fromUrl = new URLSearchParams(window.location.search).get("signInError");
     if (fromUrl) {
       setReturned(fromUrl);
@@ -46,97 +56,27 @@ export function SignInDialog({ onSignedIn }: { onSignedIn?: () => void }) {
     }
   }, []);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    const ok = await signIn(email, password, isNew);
-    if (ok) {
-      onSignedIn?.();
-    }
-  }
-
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-background p-5 shadow-xl">
-        <h2 className="text-sm font-medium text-foreground">
-          {isNew ? "Create an account" : "Sign in"}
-        </h2>
+        <h2 className="text-sm font-medium text-foreground">Sign in</h2>
         <p className={HINT}>
-          {isNew
-            ? "A free account keeps one project and runs one clone a day. No card."
-            : "Welcome back."}
+          A free account keeps {usage?.maxProjects ?? 1} project and runs{" "}
+          {usage?.remaining ?? 1} clone a day. No card.
         </p>
 
-        <form onSubmit={submit} className="mt-4 space-y-3">
-          <div>
-            <label htmlFor="account-email" className={LABEL}>
-              Email
-            </label>
-            <input
-              id="account-email"
-              type="email"
-              autoComplete="email"
-              required
-              className={INPUT}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div>
-            <label htmlFor="account-password" className={LABEL}>
-              Password
-            </label>
-            <input
-              id="account-password"
-              type="password"
-              autoComplete={isNew ? "new-password" : "current-password"}
-              required
-              minLength={isNew ? 8 : undefined}
-              className={INPUT}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            {isNew && <p className={HINT}>At least 8 characters.</p>}
-          </div>
-
-          {(error || returned) && (
-            <p role="alert" className="text-xs text-red-500">
-              {error || returned}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-          >
-            {loading ? "Working..." : isNew ? "Create account" : "Sign in"}
-          </button>
-        </form>
-
-        <button
-          type="button"
-          className="mt-3 text-xs text-muted-foreground underline"
-          onClick={() => setIsNew((value) => !value)}
-        >
-          {isNew ? "I already have an account" : "Create an account instead"}
-        </button>
-
-        {usage && usage.tier === "free" && (
-          <p className={HINT}>
-            {usage.maxProjects} project · {usage.remaining} run
-            {usage.remaining === 1 ? "" : "s"} left today
+        {returned && (
+          <p role="alert" className="mt-3 text-xs text-red-500">
+            {returned}
           </p>
         )}
 
-        {providers.length > 0 && (
-          <>
-            <div className="my-3 flex items-center gap-2">
-              <span className="h-px flex-1 bg-border" />
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                or
-              </span>
-              <span className="h-px flex-1 bg-border" />
-            </div>
+        {failed ? (
+          <p className="mt-4 rounded-lg border border-border p-3 text-xs leading-5 text-muted-foreground">
+            Signing in is not available right now. Please try again later.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-2">
             {providers.map((provider) => (
               <a
                 key={provider}
@@ -147,13 +87,24 @@ export function SignInDialog({ onSignedIn }: { onSignedIn?: () => void }) {
                 // the server passes it back on the address.
                 href={`${HTTP_BACKEND_URL}/api/auth/${provider}/start`}
                 data-testid={`oauth-${provider}`}
-                className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
               >
-                {provider === "github" ? <FaGithub aria-hidden="true" /> : <FcGoogle aria-hidden="true" />}
-                Continue with {provider === "github" ? "GitHub" : "Google"}
+                {provider === "github" ? (
+                  <FaGithub aria-hidden="true" />
+                ) : (
+                  <FcGoogle aria-hidden="true" />
+                )}
+                Continue with {NAMES[provider] ?? provider}
               </a>
             ))}
-          </>
+          </div>
+        )}
+
+        {usage && usage.tier === "free" && (
+          <p className={HINT}>
+            {usage.maxProjects} project · {usage.remaining} run
+            {usage.remaining === 1 ? "" : "s"} left today
+          </p>
         )}
       </div>
     </div>

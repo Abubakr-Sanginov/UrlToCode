@@ -35,6 +35,21 @@ def sign_up(client: TestClient, email: str = "one@test.dev") -> Dict[str, Any]:
     return response.json()
 
 
+# A provider the route will accept. The repair route checks the allowance
+# after it checks that a model is configured, and answers 400 for that, so a
+# test about the allowance has to satisfy the other condition first.
+#
+# Carried in the request body rather than in the environment on purpose: an
+# environment key makes the result depend on whose machine ran it. This file
+# used to rely on the developer's `.env` having one, which is why it passed in
+# isolation and failed in a suite that no longer loaded `.env`.
+ANY_USABLE_PROVIDER: Dict[str, Any] = {
+    "customProviderBaseUrl": "https://provider.test",
+    "customProviderModel": "some-model",
+    "customProviderApiKey": "some-key",
+}
+
+
 def test_someone_can_sign_up_and_is_told_their_limits() -> None:
     client = TestClient(app)
 
@@ -234,7 +249,7 @@ def test_the_allowance_is_taken_before_the_work_is_paid_for(
     assert owner is not None
     accounts_module.spend_action(owner, "edit")
 
-    response = client.post("/api/clone-runs/run-1/repair", json={})
+    response = client.post("/api/clone-runs/run-1/repair", json=ANY_USABLE_PROVIDER)
 
     # Not merely an error: a 402 is the only answer that tells the user
     # they can come back tomorrow.

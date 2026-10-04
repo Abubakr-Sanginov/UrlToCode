@@ -41,7 +41,7 @@ export default function WelcomePage() {
   const isSignInOpen = useAccountUi((state) => state.isSignInOpen);
   const openSignIn = useAccountUi((state) => state.openSignIn);
   const openRegister = useAccountUi((state) => state.openRegister);
-  const closeSignIn = useAccountUi((state) => state.closeSignIn);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Sent here by a failed GitHub or Google sign-in: the dialog is what shows
@@ -230,14 +230,7 @@ export default function WelcomePage() {
         )}
       </main>
 
-      {isSignInOpen && (
-        <SignInDialog
-          onSignedIn={() => {
-            closeSignIn();
-            navigate("/");
-          }}
-        />
-      )}
+      {isSignInOpen && <SignInDialog />}
     </div>
   );
 }

@@ -31,29 +31,42 @@ like `DATABASE_URL`; a reload will not pick them up.
 Each provider matches the callback address exactly, character for character,
 and refuses anything else. This is the one thing that usually goes wrong.
 
-Take it from the startup of a local server — start sign-in, copy the address
-the browser was sent to, and read the `redirect_uri` out of it. Locally it
-is:
+**It is the backend's address, not the site's.** The callback route is what
+sets the session cookie, and a cookie belongs to the address that set it. If
+the callback ran on the site, the cookie would be set on the site, and every
+API call goes to the backend — so the browser would be asked for a cookie it
+does not have, and nobody would be signed in. That is the whole reason the
+cookie is `SameSite=None; Secure`: it is what lets a cookie set on the
+backend travel to API calls the page makes on the site's origin.
+
+With the site on Vercel and the backend on Render:
+
+```
+https://urltocode.onrender.com/api/auth/github/callback
+https://urltocode.onrender.com/api/auth/google/callback
+```
+
+which is `OAUTH_REDIRECT_BASE` plus the path. Set it, because the address the
+browser was sent to is the backend's own, and the two are the same thing
+only while there is no proxy in between:
+
+```
+OAUTH_REDIRECT_BASE=https://urltocode.onrender.com
+APP_URL=https://url-to-code-gjbe.vercel.app
+```
+
+`APP_URL` is where the person lands afterwards. Register the callback under
+`OAUTH_REDIRECT_BASE`, never under `APP_URL`.
+
+Locally it is the same idea on one address, through the Vite proxy:
 
 ```
 http://localhost:5173/api/auth/github/callback
 http://localhost:5173/api/auth/google/callback
 ```
 
-It goes through the app's own address rather than the backend's, because the
-session cookie is set by the callback. A cookie set by one origin during a
-redirect from another is at the mercy of the browser's third-party rules,
-and browsers are increasingly unwilling.
-
-When the app is at its public address, the address becomes
-`https://your-domain/api/auth/<provider>/callback`. Register that one too.
-
 If the app is reached by an address other than the one registered — a proxy
-in front, say — set `OAUTH_REDIRECT_BASE` to the registered address:
-
-```
-OAUTH_REDIRECT_BASE=https://your-domain
-```
+in front, say — `OAUTH_REDIRECT_BASE` overrides it.
 
 ### GitHub
 
@@ -62,8 +75,8 @@ OAUTH_REDIRECT_BASE=https://your-domain
 | Field | Value |
 | --- | --- |
 | Application name | UrlToCode |
-| Homepage URL | your app's address |
-| Authorization callback URL | `<address>/api/auth/github/callback` |
+| Homepage URL | `https://url-to-code-gjbe.vercel.app` |
+| Authorization callback URL | `https://urltocode.onrender.com/api/auth/github/callback` |
 
 GitHub also accepts `http://localhost:<port>/...` for local work, so no
 tunnel is needed to try it.
@@ -76,7 +89,7 @@ OAuth client ID**, type **Web application**.
 | Field | Value |
 | --- | --- |
 | Name | UrlToCode |
-| Authorised redirect URIs | `<address>/api/auth/google/callback` |
+| Authorised redirect URIs | `https://urltocode.onrender.com/api/auth/google/callback` |
 
 Then enable the API: **APIs & Services → Library → People API**. The flow
 reads who the person is from Google's userinfo endpoint, which the People
@@ -111,9 +124,16 @@ leaves the real one alone.
 
 ## After signing in with a provider
 
-A provider account has no password, so there is nothing to type on the
-password form. If someone wants to add one — to keep signing in without the
-provider — that is a separate piece of work and it is not here.
+A provider account has no password, and there is no password form any more:
+Google and GitHub are the only way in. That is the reason the cookie is
+`SameSite=None; Secure` and the callback sits on the backend — both exist so
+that a session set during a redirect between two addresses is still usable.
+
+The `/api/auth/register` and `/api/auth/login` routes remain on the server.
+Nothing in the app calls them, and a provider account has no password to log
+in with, so they cannot be used to reach one. They are left in place because
+removing them would change the API for no gain, not because anything depends
+on them.
 
 ## Checking it worked
 
