@@ -811,6 +811,74 @@ def read_invoice(payload: str, secret: str) -> Optional[Dict[str, Any]]:
     return cast(Dict[str, Any], claim)
 
 
+PAY_LINK_PREFIX = "pay"
+
+
+def sign_pay_link(owner_id: int, tier: str, secret: str) -> str:
+    """The `start` parameter of a link that opens the bot on a plan.
+
+    A website visitor cannot pay from the page: Stars exist only inside
+    Telegram. So the page hands them to the bot, and the bot has to know
+    whose account the payment is for. That cannot be taken from the chat -
+    the person in it may have signed up with an email and never used
+    Telegram - so the account travels in the link, signed.
+
+    Telegram caps the parameter at 64 characters of `A-Za-z0-9_-`, which is why
+    this is a short truncated signature rather than the invoice payload. It
+    is only a ticket to *receive an invoice*: the invoice itself is signed in
+    full as always, and it is what the payment is checked against.
+    """
+    issued = int(time.time())
+    tag = _pay_link_tag(owner_id, tier, issued, secret)
+    return f"{PAY_LINK_PREFIX}_{tier}-{owner_id}-{_to_base36(issued)}-{tag}"
+
+
+def read_pay_link(argument: str, secret: str) -> Optional[Dict[str, Any]]:
+    """Who and what a `pay_...` start parameter asks for, if it is genuine."""
+    prefix, _, rest = (argument or "").partition("_")
+    if prefix != PAY_LINK_PREFIX or not rest:
+        return None
+    parts = rest.split("-")
+    if len(parts) != 4:
+        return None
+    tier, owner_text, issued_text, tag = parts
+    if tier not in STAR_PRICES:
+        return None
+    try:
+        owner = int(owner_text)
+        issued = int(issued_text, 36)
+    except ValueError:
+        return None
+    expected = _pay_link_tag(owner, tier, issued, secret)
+    if not hmac.compare_digest(expected, tag):
+        return None
+    if issued <= 0 or time.time() - issued > INVOICE_TTL_SECONDS:
+        return None
+    return {"owner": owner, "tier": tier}
+
+
+def _pay_link_tag(owner_id: int, tier: str, issued: int, secret: str) -> str:
+    message = f"{PAY_LINK_PREFIX}|{tier}|{owner_id}|{issued}"
+    digest = hmac.new(
+        secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
+    ).digest()
+    # 24 hex characters is 96 bits: far past what can be guessed within the
+    # hour a link lives, and short enough to fit the parameter. Hex rather
+    # than base64 because the link is split on "-", which base64url contains.
+    return digest.hex()[:24]
+
+
+def _to_base36(number: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if number == 0:
+        return "0"
+    out = ""
+    while number:
+        number, remainder = divmod(number, 36)
+        out = digits[remainder] + out
+    return out
+
+
 def record_payment(
     charge_id: str, owner_id: int, tier: str, stars: int
 ) -> bool:

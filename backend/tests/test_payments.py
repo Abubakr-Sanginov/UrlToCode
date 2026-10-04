@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 import accounts as accounts_module
 import telegram_auth
+from routes import accounts as accounts_route
 from routes import telegram as telegram_module
 from tests.test_telegram import BOT_TOKEN, make_init_data
 
@@ -456,3 +457,96 @@ class TestTheUpgradeLands:
         assert paid is not None
         after = accounts_module.usage_of(paid)
         assert after.remaining > before.remaining
+
+class TestPayingFromTheWebsite:
+    """The site cannot open a payment sheet - Stars exist only inside
+    Telegram - so "Pay" sends the visitor to the bot, and the bot invoices
+    the account that asked, whoever is typing in the chat."""
+
+    @pytest.fixture
+    def site(self, client: TestClient, monkeypatch) -> TestClient:
+        monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "UrlToCodeBot")
+        app = FastAPI()
+        app.include_router(telegram_module.router)
+        app.include_router(accounts_route.router)
+        web = TestClient(app)
+        response = web.post(
+            "/api/auth/register",
+            json={"email": "buyer@example.com", "password": "correct horse battery"},
+        )
+        assert response.status_code == 200
+        return web
+
+    def test_the_link_opens_the_bot_on_the_plan(self, site: TestClient):
+        response = site.post("/api/telegram/pay-link", json={"tier": "pro"})
+
+        assert response.status_code == 200
+        url = response.json()["url"]
+        assert url.startswith("https://t.me/UrlToCodeBot?start=pay_pro-")
+        # Telegram refuses a start parameter longer than 64 characters.
+        assert len(url.split("start=", 1)[1]) <= 64
+
+    def test_a_signed_out_visitor_gets_no_link(self, client: TestClient):
+        response = client.post("/api/telegram/pay-link", json={"tier": "pro"})
+        assert response.status_code == 401
+
+    def test_an_unknown_plan_is_refused(self, site: TestClient):
+        response = site.post("/api/telegram/pay-link", json={"tier": "platinum"})
+        assert response.status_code == 400
+
+    def test_the_bot_invoices_the_account_that_asked(
+        self, site: TestClient, telegram_ok: Dict[str, Any]
+    ):
+        url = site.post("/api/telegram/pay-link", json={"tier": "studio"}).json()["url"]
+        start = url.split("start=", 1)[1]
+        account_id = site.get("/api/me").json()["account"]["id"]
+
+        # A different person, with no account here, opens the link.
+        site.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 1,
+                "message": {"text": f"/start {start}", "chat": {"id": 42}, "from": {"id": 42}},
+            },
+            headers=HOOK,
+        )
+
+        method, payload = telegram_ok["calls"][0]
+        assert method == "sendInvoice"
+        assert payload["chat_id"] == "42"
+        assert payload["currency"] == "XTR"
+        assert payload["prices"][0]["amount"] == accounts_module.STAR_PRICES["studio"]
+        claim = accounts_module.read_invoice(payload["payload"], SECRET)
+        assert claim is not None
+        assert claim["owner"] == account_id
+        assert claim["tier"] == "studio"
+
+    def test_a_forged_link_gets_no_invoice(
+        self, client: TestClient, telegram_ok: Dict[str, Any]
+    ):
+        forged = f"pay_studio-1-{accounts_module._to_base36(int(time.time()))}-aaaaaaaaaaaaaaaaaaaaaaaa"
+
+        client.post(
+            "/api/telegram/webhook",
+            json={
+                "update_id": 1,
+                "message": {"text": f"/start {forged}", "chat": {"id": 1}, "from": {"id": 1}},
+            },
+            headers=HOOK,
+        )
+
+        assert all(method != "sendInvoice" for method, _ in telegram_ok["calls"])
+
+    def test_a_link_for_another_plan_does_not_verify(self):
+        start = accounts_module.sign_pay_link(5, "starter", SECRET)
+        swapped = start.replace("starter", "studio")
+
+        assert accounts_module.read_pay_link(start, SECRET) is not None
+        assert accounts_module.read_pay_link(swapped, SECRET) is None
+
+    def test_an_old_link_is_refused(self, monkeypatch):
+        start = accounts_module.sign_pay_link(5, "pro", SECRET)
+        later = time.time() + accounts_module.INVOICE_TTL_SECONDS + 5
+        monkeypatch.setattr(accounts_module.time, "time", lambda: later)
+
+        assert accounts_module.read_pay_link(start, SECRET) is None

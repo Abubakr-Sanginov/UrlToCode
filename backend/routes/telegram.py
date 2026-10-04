@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
@@ -56,6 +56,30 @@ def mini_app_url() -> str:
     if configured:
         return configured.rstrip("/")
     return os.environ.get("APP_URL", "").strip().rstrip("/") or "http://localhost:5173"
+
+
+_bot_username_cache: Optional[str] = None
+
+
+async def bot_username() -> Optional[str]:
+    """The bot's @name, without the @, for building t.me links.
+
+    Configured when it is known, asked of Telegram when it is not, and then
+    remembered: it never changes for a given token.
+    """
+    global _bot_username_cache
+    configured = os.environ.get("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+    if configured:
+        return configured
+    if _bot_username_cache:
+        return _bot_username_cache
+    answer = await _telegram_call("getMe", {})
+    result = cast(Dict[str, Any], (answer or {}).get("result") or {})
+    name = str(result.get("username") or "")
+    if name:
+        _bot_username_cache = name
+        return name
+    return None
 
 
 class MiniAppButton(BaseModel):
@@ -183,6 +207,12 @@ async def _handle_start(message: Dict[str, Any]) -> JSONResponse:
         # chat and the user in a private chat.
         accounts.remember_telegram_chat(telegram_user_id, str(chat_id))
 
+    # `/start pay_<tier>-...` comes from the website's "Pay" button: the bot
+    # answers with the invoice itself rather than the Mini App button.
+    pay = _pay_from_command(message.get("text"))
+    if pay is not None:
+        return await _send_plan_invoice(str(chat_id), pay)
+
     # `/start project_abc123` puts that in the button, so the Mini App opens
     # on that project instead of at its front door. Telegram caps this at 64
     # characters, which is why the run id is carried rather than a title.
@@ -198,6 +228,42 @@ async def _handle_start(message: Dict[str, Any]) -> JSONResponse:
         "Paste a link and get a working copy of the site.",
         reply_markup=markup,
     )
+    return JSONResponse({"ok": True})
+
+
+def _pay_from_command(text: Any) -> Optional[Dict[str, Any]]:
+    """The verified plan request in `/start pay_...`, if there is one."""
+    parts = str(text or "").split()
+    if len(parts) < 2 or not parts[1].startswith("pay_"):
+        return None
+    return accounts.read_pay_link(parts[1], invoice_secret())
+
+
+async def _send_plan_invoice(chat_id: str, claim: Dict[str, Any]) -> JSONResponse:
+    """Put the Stars invoice for a plan into this chat.
+
+    The invoice is signed for the account that asked on the website, not for
+    whoever is typing in the chat. Paying for somebody else's plan is
+    harmless; crediting the wrong account is not, and the website's account
+    is the one that knew what it wanted.
+    """
+    tier = str(claim["tier"])
+    stars = accounts.STAR_PRICES[tier]
+    answer = await _telegram_call(
+        "sendInvoice",
+        {
+            "chat_id": chat_id,
+            "title": f"UrlToCode {tier.title()}",
+            "description": f"{accounts.TIER_DOLLARS[tier]} dollars of UrlToCode a month.",
+            "payload": accounts.sign_invoice(int(claim["owner"]), tier, invoice_secret()),
+            "currency": "XTR",
+            "prices": [{"label": f"{tier.title()} plan", "amount": stars}],
+        },
+    )
+    if answer is None:
+        await send_message(
+            chat_id, "I could not make out the invoice just now. Please try the button again."
+        )
     return JSONResponse({"ok": True})
 
 
@@ -259,6 +325,32 @@ async def _telegram_call(method: str, payload: Dict[str, Any]) -> Optional[Dict[
     # that as success is how a refused invoice becomes a link that opens an
     # error page.
     return answer if answer.get("ok") else None
+
+
+@router.post("/pay-link")
+async def create_pay_link(
+    body: InvoiceRequest,
+    utc_session: Optional[str] = Cookie(default=None),
+) -> Dict[str, Any]:
+    """A link that opens the bot on one of the paid plans.
+
+    For the website, where there is no Telegram to ask for a payment sheet.
+    The account is the signed-in session's, never a field of the request.
+    """
+    account = require_account(utc_session)
+    if body.tier not in accounts.STAR_PRICES:
+        raise HTTPException(status_code=400, detail="There is no such plan.")
+
+    name = await bot_username()
+    if not name:
+        raise HTTPException(status_code=503, detail="The Telegram bot is not set up.")
+
+    start = accounts.sign_pay_link(account.id, body.tier, invoice_secret())
+    return {
+        "url": f"https://t.me/{name}?start={start}",
+        "tier": body.tier,
+        "stars": accounts.STAR_PRICES[body.tier],
+    }
 
 
 @router.post("/invoice")

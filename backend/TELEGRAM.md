@@ -45,6 +45,21 @@ TELEGRAM_MINI_APP_URL=https://your-domain.example
 Where the domain points has to serve this app. If the address is wrong the
 button opens nothing at all, with no error anyone can see.
 
+### Paying from the website
+
+On the website "Pay" cannot open a payment sheet, because Stars exist only
+inside Telegram. It opens `https://t.me/<your bot>?start=pay_<plan>-...`
+instead; the bot answers that `/start` with the Stars invoice, and the
+payment raises the plan of the account that clicked on the site, whoever is
+typing in the chat. The link is signed and good for one hour.
+
+The bot's username is asked of Telegram on first use. To skip that call, set
+it:
+
+```
+TELEGRAM_BOT_USERNAME=YourBot
+```
+
 ### 3. Choose a secret for the webhook
 
 Any long random string. Telegram sends it back on every call, and this

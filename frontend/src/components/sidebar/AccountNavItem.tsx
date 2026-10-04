@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import { useAccount } from "../../hooks/useAccount";
 import { useAccountUi } from "../../store/account-ui-store";
 import { AccountPanel } from "./AccountPanel";
@@ -15,6 +16,7 @@ import { LuUser } from "react-icons/lu";
 export function AccountNavItem() {
   const { account, usage, loading } = useAccount();
   const togglePanel = useAccountUi((state) => state.togglePanel);
+  const navigate = useNavigate();
 
   if (loading) {
     return <div className="h-[42px]" aria-hidden="true" />;
@@ -45,10 +47,10 @@ export function AccountNavItem() {
   return (
     <button
       type="button"
-      onClick={togglePanel}
+      onClick={() => navigate("/profile")}
       aria-label={`Account: ${account.email}`}
       className="relative flex items-center justify-center gap-1 rounded-md p-2 text-foreground transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex-col lg:gap-1 lg:px-2 lg:py-1.5"
-      title={`${account.email} - ${usage?.tier ?? ""} plan`}
+      title={`${account.email} - ${usage?.tier ?? ""} plan. Open profile`}
       data-testid="account-nav"
     >
       <span

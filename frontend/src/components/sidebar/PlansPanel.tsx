@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { LuCheck, LuSparkles } from "react-icons/lu";
-import { TariffTier, buyPlan, tariff } from "../../lib/payments";
+import { TariffTier, buyPlan, planLinkInBot, tariff } from "../../lib/payments";
+import { useAccountStore } from "../../store/account-store";
 import { isInsideTelegram } from "../../lib/telegram";
 
 const ALLOWANCES: Record<string, string> = {
@@ -12,8 +13,9 @@ const ALLOWANCES: Record<string, string> = {
 /**
  * The plans, and the button that pays for one.
  *
- * The button opens Telegram's own payment sheet. Nothing here decides that
- * a payment worked - the plan changes when the webhook says so, and the
+ * Inside Telegram the button opens Telegram's own payment sheet. On the
+ * website it opens the bot, which sends the invoice. Either way, nothing here
+ * decides that a payment worked - the plan changes when the webhook says so, and the
  * account is re-read afterwards. A payment screen drawn by this app would be
  * one that could be edited.
  */
@@ -34,15 +36,33 @@ export function PlansPanel({ currentTier }: { currentTier: string }) {
     void load();
   }, [load]);
 
+  // Paying happens in another app. Coming back to this tab is the moment to
+  // ask the server whether the plan changed, rather than leaving the old one
+  // on screen until a reload.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void useAccountStore.getState().refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   async function buy(tier: string) {
     setBusy(tier);
     setError("");
     try {
-      const opened = await buyPlan(tier);
-      if (!opened) {
-        setError(
-          "Buying a plan happens inside Telegram. Open this in the bot."
-        );
+      if (isInsideTelegram()) {
+        const opened = await buyPlan(tier);
+        if (!opened) setError("This version of Telegram cannot open a payment.");
+        return;
+      }
+      // A new tab, so this page is still here when the payment is done.
+      const url = await planLinkInBot(tier);
+      if (!window.open(url, "_blank", "noopener")) {
+        // A blocked popup: leaving the page is better than doing nothing.
+        window.location.assign(url);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "That did not work.");
@@ -106,7 +126,8 @@ export function PlansPanel({ currentTier }: { currentTier: string }) {
 
       {!isInsideTelegram() && (
         <p className="text-xs leading-5 text-muted-foreground">
-          Paying happens inside Telegram, which is the only place Stars exist.
+          Payment opens in our Telegram bot, where Stars are paid. Come back
+          here afterwards and your plan will be updated.
         </p>
       )}
     </div>

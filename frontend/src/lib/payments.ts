@@ -93,6 +93,26 @@ export async function buyPlan(tier: string): Promise<boolean> {
 }
 
 /**
+ * A link that opens the bot on a plan, for a visitor on the website.
+ *
+ * Outside Telegram there is no payment sheet to open, and Stars cannot be
+ * spent anywhere else. So the site hands the visitor to the bot: the server
+ * puts the signed-in account into the link, and the bot sends the invoice for
+ * that account. The session cookie is what identifies the buyer here.
+ */
+export async function planLinkInBot(tier: string): Promise<string> {
+  const response = await fetch(`${HTTP_BACKEND_URL}/api/telegram/pay-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ tier }),
+  });
+  if (!response.ok) throw new Error(await readError(response, "Could not open the bot."));
+  const body = (await response.json()) as { url: string };
+  return body.url;
+}
+
+/**
  * The project this was opened to show, if it was.
  *
  * `/start project_<id>` from the bot lands here. The value came out of a
