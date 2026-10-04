@@ -248,13 +248,24 @@ async def _send_plan_invoice(chat_id: str, claim: Dict[str, Any]) -> JSONRespons
     is the one that knew what it wanted.
     """
     tier = str(claim["tier"])
-    stars = accounts.STAR_PRICES[tier]
+    stars = accounts.chargeable_stars(tier)
+    if accounts.test_stars() is not None:
+        logger.warning(
+            "Charging %d Stars for %s: TEST PRICING IS ON.", stars, tier
+        )
     answer = await _telegram_call(
         "sendInvoice",
         {
             "chat_id": chat_id,
             "title": f"UrlToCode {tier.title()}",
-            "description": f"{accounts.TIER_DOLLARS[tier]} dollars of UrlToCode a month.",
+            # At test prices the dollars are not what is being charged, and
+            # saying otherwise on the payment screen is a lie somebody has to
+            # act on.
+            "description": (
+                f"{stars} Stars - test price."
+                if accounts.test_stars() is not None
+                else f"{accounts.TIER_DOLLARS[tier]} dollars of UrlToCode a month."
+            ),
             "payload": accounts.sign_invoice(int(claim["owner"]), tier, invoice_secret()),
             "currency": "XTR",
             "prices": [{"label": f"{tier.title()} plan", "amount": stars}],
@@ -367,7 +378,7 @@ async def create_pay_link(
     return {
         "url": f"https://t.me/{name}?start={start}",
         "tier": body.tier,
-        "stars": accounts.STAR_PRICES[body.tier],
+        "stars": accounts.chargeable_stars(body.tier),
     }
 
 
@@ -389,14 +400,20 @@ async def create_invoice(
 
     account = accounts.account_for_telegram(user.id, user.username)
     payload = accounts.sign_invoice(account.id, tier, invoice_secret())
-    stars = accounts.STAR_PRICES[tier]
+    stars = accounts.chargeable_stars(tier)
+    if accounts.test_stars() is not None:
+        logger.warning(
+            "Charging %d Stars for %s: TEST PRICING IS ON.", stars, tier
+        )
 
     answer = await _telegram_call(
         "createInvoiceLink",
         {
             "title": f"UrlToCode {tier.title()}",
             "description": (
-                f"{accounts.TIER_DOLLARS[tier]} dollars of UrlToCode a month."
+                f"{stars} Stars - test price."
+                if accounts.test_stars() is not None
+                else f"{accounts.TIER_DOLLARS[tier]} dollars of UrlToCode a month."
             ),
             "payload": payload,
             "currency": "XTR",

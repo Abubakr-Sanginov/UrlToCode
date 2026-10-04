@@ -89,6 +89,72 @@ class TestTariffEndpoint:
         assert body["commission"] == accounts.STAR_COMMISSION
 
 
+class TestWhenTestingThePaymentPath:
+    """The one-Star price, for checking the flow without spending 360.
+
+    The danger is not the price, it is leaving it on. A server charging one
+    Star for Studio credits the tier exactly as it should, so nothing about
+    the result looks wrong - the only symptom is a revenue figure. Every
+    case here is about being sure it is off unless it was asked for.
+    """
+
+    def test_it_is_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_TEST_STARS", raising=False)
+
+        assert accounts.test_stars() is None
+        assert accounts.chargeable_stars("starter") == accounts.STAR_PRICES["starter"]
+
+    def test_when_on_every_plan_costs_that(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", "1")
+
+        assert accounts.chargeable_stars("studio") == 1
+        assert accounts.chargeable_stars("starter") == 1
+
+    def test_the_real_prices_are_left_alone(self, monkeypatch):
+        # The override is a price to charge, not a rewrite of the tariff.
+        # Overwriting these would leave no way back without a deploy.
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", "1")
+
+        assert accounts.STAR_PRICES["starter"] == 360
+        assert accounts.STAR_PRICES["studio"] == 3240
+
+    @pytest.mark.parametrize("value", ["0", "-1", "one", "", "  ", "1.5"])
+    def test_a_value_that_is_not_a_price_turns_it_off(
+        self, monkeypatch, value
+    ):
+        # Anything doubtful resolves to "off". A typo in an environment
+        # variable should not be the reason a $45 plan costs a Star.
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", value)
+
+        assert accounts.test_stars() is None
+
+    def test_the_tariff_says_so_when_it_is_on(self, monkeypatch):
+        # Visible rather than inferred: this is the one place somebody can
+        # look to find out what a deployment is charging.
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", "1")
+
+        plans = accounts.tariff()
+
+        assert all(plan["stars"] == 1 for plan in plans)
+        assert all(plan["testPrice"] is True for plan in plans)
+
+    def test_the_tariff_says_nothing_when_it_is_off(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_TEST_STARS", raising=False)
+
+        assert all("testPrice" not in plan for plan in accounts.tariff())
+
+    def test_the_endpoint_reports_the_price_that_will_be_charged(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", "1")
+        app = FastAPI()
+        app.include_router(telegram_module.router)
+
+        body = TestClient(app).get("/api/telegram/tariff").json()
+
+        assert all(plan["stars"] == 1 for plan in body["tiers"])
+
+
 class TestWhenTheRateMoves:
     def test_the_prices_follow_the_rate(self, monkeypatch):
         """If a Star turns out to be worth less than assumed, the price has

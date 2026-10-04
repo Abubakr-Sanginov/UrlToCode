@@ -67,6 +67,16 @@ async def lifespan(app: FastAPI):
     # Made here rather than on the first request: a wrong connection string
     # should stop the server saying so, not surface later as a failed signup.
     accounts_store._ready()
+    # Loud, because the failure this guards against is invisible: a server
+    # charging one Star for Studio credits the tier perfectly and hands out a
+    # $45 plan for nothing. It has to be noticed in the log, on the day it is
+    # switched on, rather than inferred from revenue later.
+    if accounts_store.test_stars() is not None:
+        print(
+            "!! TEST PRICING IS ON: every plan costs "
+            f"{accounts_store.test_stars()} Stars. Anyone can buy a paid "
+            "tier for almost nothing. Unset TELEGRAM_TEST_STARS to stop."
+        )
     print(f"Backend startup complete. Debug mode is {debug_status}.")
     yield
     # A dev server left running would hold a port and a file watcher on a

@@ -185,6 +185,29 @@ class TestPaying:
         # bought for whom.
         assert accounts_module.read_invoice(payload["payload"], SECRET) is not None
 
+    def test_the_one_star_price_reaches_telegram(
+        self, client: TestClient, telegram_ok: Dict[str, Any], monkeypatch
+    ):
+        """The price the buyer is shown, not the price the tariff lists.
+
+        Checking accounts.chargeable_stars alone would pass while the
+        invoice still went out at 360, which is the thing being tested: the
+        number that reaches the payment screen.
+        """
+        monkeypatch.setenv("TELEGRAM_TEST_STARS", "1")
+
+        client.post(
+            "/api/telegram/invoice",
+            json={"tier": "starter"},
+            headers={"X-Telegram-Auth": make_init_data()},
+        )
+
+        method, payload = telegram_ok["calls"][0]
+        assert method == "createInvoiceLink"
+        assert payload["prices"][0]["amount"] == 1
+        # And the screen does not still claim to be $5 for it.
+        assert "$5" not in payload["description"]
+
     def test_a_telegram_refusal_is_not_handed_on_as_a_link(self, client: TestClient, monkeypatch):
         async def refused(method: str, payload: Dict[str, Any]):
             # Telegram answers 200 with ok:false for a refused request.

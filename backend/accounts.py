@@ -106,6 +106,41 @@ STAR_PRICES: Dict[str, int] = {
 }
 
 
+def test_stars() -> Optional[int]:
+    """A price to charge instead of the real one, when deliberately set.
+
+    For testing the payment path without spending 360 Stars on the attempt.
+    Off unless TELEGRAM_TEST_STARS names a positive number.
+
+    The failure this guards against is leaving it on. A server charging one
+    Star for Studio hands out a $45 plan for about two cents, and nothing
+    about the resulting service looks wrong - the tier is credited exactly as
+    it should be. So it is never a price quietly substituted in place: it is
+    opt-in, one environment variable, and it is reported in the tariff and
+    logged at startup, so a deployment carrying it can be seen rather than
+    inferred from a sales figure.
+    """
+    raw = str(os.environ.get("TELEGRAM_TEST_STARS", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def chargeable_stars(tier: str) -> int:
+    """What to actually put on the invoice for this tier.
+
+    The real price, unless the test price is on and this is a tier we sell.
+    """
+    override = test_stars()
+    if override is None:
+        return STAR_PRICES[tier]
+    return override
+
+
 def stars_net(stars: int) -> float:
     """What is left of a payment of this many Stars.
 
@@ -121,16 +156,24 @@ def tariff() -> List[Dict[str, Any]]:
 
     Both figures are returned because showing only one of them is how a
     $5 tier quietly becomes a $3.50 one.
+
+    ``stars`` is what will actually be charged, so a deployment running at
+    test prices says so here rather than looking like a pricing mistake.
     """
-    return [
+    override = test_stars()
+    plans: List[Dict[str, Any]] = [
         {
             "tier": tier,
             "dollars": TIER_DOLLARS[tier],
-            "stars": price,
-            "net": stars_net(price),
+            "stars": override if override is not None else price,
+            "net": stars_net(override if override is not None else price),
         }
         for tier, price in STAR_PRICES.items()
     ]
+    if override is not None:
+        for plan in plans:
+            plan["testPrice"] = True
+    return plans
 
 # A whole generating or editing run costs one unit, however many pages it
 # touches: the user thinks of it as one action, and charging per page made
