@@ -52,6 +52,22 @@ def using_postgres() -> bool:
     return DATABASE_URL.strip().lower().startswith(("postgres://", "postgresql://"))
 
 
+def reset_engine_for_tests() -> None:
+    """Point this module at whatever DATABASE_URL now says, and start over.
+
+    DATABASE_URL is read once, at import, because production sets it before
+    anything runs. A test that wants to check the code against the other
+    engine cannot rely on that: it has to re-read the value and drop the
+    pool, or the next connect() goes to the database the process started
+    with and the check quietly proves nothing.
+
+    Named for tests on purpose. Production has no business calling it.
+    """
+    global DATABASE_URL
+    _close_pool()
+    DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
+
+
 def q(sql: str) -> str:
     """The query as the driver at hand wants it.
 

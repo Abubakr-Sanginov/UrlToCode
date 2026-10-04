@@ -99,6 +99,42 @@ class TestProviderAccounts:
         assert accounts.authenticate(account.email, "anything") is None
 
 
+class TestAProviderThatGivesNoAddress:
+    """GitHub with every address private and no user:email scope.
+
+    The address is optional there, so it is genuinely absent rather than
+    merely unverified - and it used to reach normalise_email as None, which
+    raised AttributeError and turned sign-in into a 500 for those people.
+    """
+
+    def test_the_account_is_still_created(self):
+        account = accounts.account_for_provider("github", "4242", None, False)
+
+        assert account.id > 0
+
+    def test_the_placeholder_is_clearly_not_a_real_address(self):
+        # It must never reach somebody else's inbox, and it must never be
+        # mistaken later for something the person actually gave us.
+        account = accounts.account_for_provider("github", "4242", None, False)
+
+        assert account.email.endswith("@users.invalid")
+        assert "4242" in account.email
+
+    def test_the_same_person_gets_the_same_account(self):
+        # Derived from the provider's id, not invented per request - otherwise
+        # every sign-in would make another orphan account.
+        first = accounts.account_for_provider("github", "4242", None, False)
+        second = accounts.account_for_provider("github", "4242", None, False)
+
+        assert first.id == second.id
+
+    def test_two_people_without_addresses_do_not_collide(self):
+        first = accounts.account_for_provider("github", "4242", None, False)
+        second = accounts.account_for_provider("github", "7777", None, False)
+
+        assert first.id != second.id
+
+
 class TestProviderTable:
     def test_the_provider_keeps_its_identity_when_the_account_goes(self):
         account = accounts.account_for_provider("github", "1", "a@b.com", True)

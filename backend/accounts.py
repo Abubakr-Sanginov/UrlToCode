@@ -955,7 +955,12 @@ def record_payment(
     _ready()
     with _connect() as conn:
         try:
-            conn.insert(
+            # execute, not insert: payments is keyed on the charge id and has
+            # no `id` of its own to hand back, and db.insert() appends
+            # RETURNING id on Postgres. SQLite forgives that through
+            # lastrowid, so this only ever failed on the deployed engine -
+            # after somebody had already paid.
+            conn.execute(
                 "INSERT INTO payments (charge_id, owner_id, tier, stars, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (charge_id, owner_id, tier, stars, time.time()),
@@ -1353,7 +1358,7 @@ def list_projects(account: Account) -> List[Dict[str, Any]]:
 def account_for_provider(
     provider: str,
     subject: str,
-    email: str,
+    email: Optional[str],
     email_verified: bool,
 ) -> Account:
     """The account behind a signed-in identity at another provider.
@@ -1375,7 +1380,20 @@ def account_for_provider(
     pointed at a different person.
     """
     _ready()
-    address = normalise_email(email)
+    if email:
+        address = normalise_email(email)
+    else:
+        # A provider may hand back no address at all: a GitHub account with
+        # every address private and no user:email scope reads as exactly that.
+        # There is still a person here, and the provider's own id is unique
+        # for them, so the account still needs something in the email column -
+        # it is NOT NULL and UNIQUE, and it is how the account is found again.
+        #
+        # Marked so it can never be mistaken for a real one, and derived from
+        # the subject rather than invented afresh, so the same person gets
+        # the same account on their next sign-in.
+        marker = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(subject))
+        address = f"{provider}-{marker[:32]}@users.invalid"
     now = time.time()
 
     with _connect() as conn:
