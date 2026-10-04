@@ -1,86 +1,66 @@
-# screenshot-to-code
+# UrltoCode
 
-Convert screenshots, mockups, Figma designs, and screen recordings into clean, functional code using AI. The easiest way to try this is using <a href="https://screenshottocode.com/?utm_source=github&utm_medium=readme&utm_campaign=oss_readme&utm_content=top_cta" target="_blank" rel="noopener noreferrer">the official, hosted product at screenshottocode.com →</a>
+**Any website. Working code.** Paste a link: an AI crawler opens the real site in a browser, walks every page, and rebuilds it as clean code you can run, edit and download.
 
+[![UrltoCode in 90 seconds: a real clone, from URL to finished code](frontend/public/demo/urltocode-demo-poster.jpg)](frontend/public/demo/urltocode-demo.mp4)
 
-https://github.com/user-attachments/assets/ec08a5e6-9606-41c5-b03a-1bf47dfeba75
+<p align="center"><sub>▶ Click the picture to watch the 90-second demo: a real clone, from URL to finished code.</sub></p>
 
+## How it works
 
-Supported stacks:
+1. **Paste a URL** and hit *Clone*.
+2. **It crawls the real site.** A real browser opens every page, embed and legal link, and records what the site actually looks like.
+3. **Choose the pages** you want built.
+4. **The clone builds up page by page**, as real code in your stack, file by file.
+5. **Compare with the original.** The preview has Desktop, Mobile, Quick view, Editor, Original and Compare tabs, so the clone sits next to the site it came from.
 
-- HTML + Tailwind
-- HTML + CSS
-- React + Tailwind
-- Vue + Tailwind
-- Bootstrap
-- Ionic + Tailwind
+Clones come out as a Next.js (App Router) or React (Vite) project, styled with Tailwind CSS.
 
-Default AI models:
+## What is in the product
 
-- Gemini 3 Flash Preview and Gemini 3.1 Pro Preview - the best models
-- GPT-5.5 and GPT-5.4 Mini
-- Claude Opus 4.6, Claude Opus 4.8
-- z-image-turbo (using Replicate) for image generation
+- **Accounts.** Sign up with an email, or with GitHub or Google. A free account keeps one project and runs one clone a day.
+- **Projects.** Every finished clone is kept on your account and can be opened again from the profile page, without crawling the site a second time.
+- **Sharing.** A finished project can be shared by a link.
+- **Plans paid in Telegram Stars.** On the website, *Pay* opens the Telegram bot, which sends the invoice for the account that asked. Inside the Telegram Mini App the payment sheet opens directly.
+- **A Telegram bot and Mini App.** The bot tells you when a clone is ready and opens the app on that project.
 
-See the [Examples](#-examples) section below for more demos.
+The site opens on a public welcome page at `/welcome`. The app itself (`/`) and the profile page (`/profile`) are behind a sign-in.
 
-Screenshot to Code also supports taking a screen recording of a website in action and turning that into a functional prototype.
+## Getting started
 
-![google in app quick 3](https://github.com/abi/screenshot-to-code/assets/23818/8758ffa4-9483-4b9b-bb66-abd6d1594c33)
-
-## 🛠 Getting Started
-
-Choose the path that fits what you want to do:
-
-- **Run locally:** best if you want to customize, self-host, or contribute.
-- **Use the hosted app:** the fastest way to try Screenshot to Code with no local setup. <a href="https://screenshottocode.com/?utm_source=github&utm_medium=readme&utm_campaign=oss_readme&utm_content=getting_started_cta" target="_blank" rel="noopener noreferrer">Open the hosted app →</a>
-
-Running locally requires API keys and a backend/frontend setup. The app has a React/Vite frontend and a FastAPI backend.
+The app has a React/Vite frontend and a FastAPI backend. Running locally needs API keys and a backend/frontend setup.
 
 ### API keys
 
-You need **at least one** model provider key (OpenAI, Anthropic, or Gemini).
-**Gemini and Replicate are strongly recommended for the best quality of
-screenshot-to-code accuracy** — Gemini powers asset extraction (reusing the
-real logos/images from your screenshot) and Replicate powers image
-generation, background removal, and image editing. Adding all four keys gives
-the best results and lets you compare multiple models per generation.
+You need **at least one** model provider key. Put them in `backend/.env`:
 
-| Key | Required? | What it unlocks |
-|-----|-----------|-----------------|
-| `OPENAI_API_KEY` | One of these three | GPT code-gen variants (GPT-5.5, GPT-5.4 Mini) |
-| `ANTHROPIC_API_KEY` | One of these three | Claude code-gen variants (Opus 5, Opus 4.8, Fable 5, Sonnet 4.6) |
-| `GEMINI_API_KEY` | One of these three — **strongly recommended** | Gemini code-gen variants (3 Flash, 3.1 Pro); extracts real assets from the screenshot; required for video mode |
-| `REPLICATE_API_KEY` | **Strongly recommended** | Image editing, background removal, and Replicate-backed image generation — without it, `edit_images` and `remove_backgrounds` are unavailable |
+| Key | What it is for |
+|-----|----------------|
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | The provider used to write the clone's pages |
+| `OPENAI_API_KEY` (and `OPENAI_BASE_URL`, `OPENAI_MODEL`) | OpenAI or any OpenAI-compatible provider |
+| `ANTHROPIC_API_KEY` | Claude models |
+| `GEMINI_API_KEY` | Gemini models; asset extraction; required for video mode |
+| `REPLICATE_API_KEY` | Image generation, editing and background removal (optional) |
 
-With more keys, the app automatically picks a stronger mix of models per
-variant; with a single key it uses that provider's models only.
+You can also enter the OpenAI, Anthropic and Gemini keys in the settings dialog of the app (the gear icon). Replicate is only read from `backend/.env`.
 
-If you'd like to run the app with Ollama open-source models (not recommended due to poor-quality results), [follow this comment](https://github.com/abi/screenshot-to-code/issues/354#issuecomment-2435479853).
+### Run the backend
 
-Run the backend (I use Poetry for package management; run `pip install --upgrade poetry` if you don't have it):
+I use Poetry for package management (`pip install --upgrade poetry` if you don't have it):
 
 ```bash
 cd backend
-echo "OPENAI_API_KEY=sk-your-key" > .env
-echo "ANTHROPIC_API_KEY=your-key" >> .env
-echo "GEMINI_API_KEY=your-key" >> .env
-echo "REPLICATE_API_KEY=r8_your-key" >> .env
 poetry install
-# Install the Chromium browser used by the screenshot preview tool.
-# On Linux, use `poetry run playwright install --with-deps chromium` to also
-# install the required system libraries (needs sudo/apt).
+# The crawler drives Chromium. On Linux, use
+# `poetry run playwright install --with-deps chromium` to also install the
+# system libraries (needs sudo/apt).
 poetry run playwright install chromium
-poetry env activate
-# run the printed command, e.g. source /path/to/venv/bin/activate
 poetry run uvicorn main:app --reload --port 7001
 ```
 
-You can also set up OpenAI, Anthropic, and Gemini keys using the settings dialog in the frontend (click the gear icon after loading the app). Replicate must be configured in `backend/.env` as `REPLICATE_API_KEY`. The Settings dialog also shows whether **screenshot preview** is available on your backend.
+Without `DATABASE_URL` the backend keeps accounts in a local SQLite file in `backend/data/`. Set `DATABASE_URL` to a Postgres connection string (for example from Neon) to use a hosted database; the tables are created on first start.
 
-> **Screenshot preview** (optional) lets the agent render its own generated page in a headless browser and visually check its work. It's enabled automatically once Chromium is installed (the `playwright install chromium` step above, or automatically in the Docker image). If Chromium is missing, the app just skips the tool — the Settings dialog shows whether it's available.
-
-Run the frontend:
+### Run the frontend
 
 ```bash
 cd frontend
@@ -88,44 +68,39 @@ pnpm install
 pnpm dev
 ```
 
-Open http://localhost:5173 to use the app.
+Open http://localhost:5173. It sends you to `/welcome` until you sign in. To run the backend on another port, set `VITE_HTTP_BACKEND_URL` and `VITE_WS_BACKEND_URL` in `frontend/.env.local`.
 
-If you prefer to run the backend on a different port, update `VITE_WS_BACKEND_URL` in `frontend/.env.local`.
-
-## Docker
-
-If you have Docker installed, run this from the root directory:
+### Docker
 
 ```bash
-echo "OPENAI_API_KEY=sk-your-key" > .env
 docker-compose up -d --build
 ```
 
-The app will be up and running at http://localhost:5173. Note that you can't develop the application with this setup, as file changes won't trigger a rebuild.
+The app is then up at http://localhost:5173. You can't develop with this setup, as file changes won't trigger a rebuild.
 
-## 🙋‍♂️ FAQs
+## Deploying
 
-- **I'm running into an error when setting up the backend. How can I fix it?** [Try this](https://github.com/abi/screenshot-to-code/issues/3#issuecomment-1814777959). If that still doesn't work, open an issue.
-- **How do I get an OpenAI API key?** See https://github.com/abi/screenshot-to-code/blob/main/Troubleshooting.md
-- **How can I configure an OpenAI proxy?** If you're not able to access the OpenAI API directly, for example because of country restrictions, you can try a VPN or configure the OpenAI base URL to use a proxy. Set `OPENAI_BASE_URL` in `backend/.env` or directly in the UI in the settings dialog. Make sure the URL has `v1` in the path, for example: `https://xxx.xxxxx.xxx/v1`.
-- **How can I update the backend host that my frontend connects to?** Configure `VITE_HTTP_BACKEND_URL` and `VITE_WS_BACKEND_URL` in `frontend/.env.local`. For example, set `VITE_HTTP_BACKEND_URL=http://124.10.20.1:7001`.
-- **Seeing UTF-8 errors when running the backend?** On Windows, open the `.env` file with Notepad++, then go to Encoding and select UTF-8.
-- **How can I provide feedback?** For feedback, feature requests, and bug reports, open an issue or ping me on [Twitter](https://twitter.com/_abi_).
+The site is a static bundle and the bot is a server with a database and a browser, so they live on two hosts: the frontend on **Vercel** (root directory `frontend`) and the backend on a host that can run the Docker image (root directory `backend`).
 
-## 📚 Examples
+- [backend/DEPLOY.md](backend/DEPLOY.md): the environment variables, the cookie and CORS setup across two addresses, and what to check after the split.
+- [backend/TELEGRAM.md](backend/TELEGRAM.md): creating the bot, the webhook, the Mini App address, and paying from the website.
+- [backend/OAUTH.md](backend/OAUTH.md): sign-in with GitHub and Google.
+- [backend/DATABASE.md](backend/DATABASE.md): SQLite or Postgres.
 
-**NYTimes**
+## Tests
 
-| Original                                                                                                                                                        | Replica                                                                                                                                                         |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <img width="1238" alt="Screenshot 2023-11-20 at 12 54 03 PM" src="https://github.com/user-attachments/assets/6b0ae86c-1b0f-4598-a578-c7b62205b3e2"> | <img width="1435" height="737" alt="Screenshot 2026-06-15 at 3 06 37 PM" src="https://github.com/user-attachments/assets/48f0ab94-5fdc-41e7-ad6e-b4ad7ef69ae1" /> |
+```bash
+cd backend && poetry run pytest && poetry run pyright
+cd frontend && pnpm lint && pnpm test
+```
 
+## FAQs
 
-**Instagram**
+- **How do I get an OpenAI API key?** See [Troubleshooting.md](Troubleshooting.md).
+- **How can I configure an OpenAI proxy?** Set `OPENAI_BASE_URL` in `backend/.env` (or in the settings dialog). The URL needs `v1` in the path, for example `https://xxx.xxxxx.xxx/v1`.
+- **How can I update the backend host my frontend connects to?** Set `VITE_HTTP_BACKEND_URL` and `VITE_WS_BACKEND_URL` in `frontend/.env.local`.
+- **Seeing UTF-8 errors when running the backend?** On Windows, open `.env` with an editor that can save as UTF-8 (for example Notepad++, then Encoding → UTF-8).
 
-https://github.com/user-attachments/assets/a335a105-f9cc-40e6-ac6b-64e5390bfc21
+## Credits
 
-**Hacker News**
-
-
-https://github.com/user-attachments/assets/205cb5c7-9c3c-438d-acd4-26dfe6e077e5
+UrltoCode started from [abi/screenshot-to-code](https://github.com/abi/screenshot-to-code) by Abi Raja and is released under the same [MIT license](LICENSE).
