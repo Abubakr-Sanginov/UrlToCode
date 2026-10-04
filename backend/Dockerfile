@@ -22,7 +22,11 @@ RUN playwright install --with-deps chromium
 
 # The crawler drives a visible browser (headless Chromium gets served bot
 # checks instead of pages), so the image needs a virtual display for it.
-RUN apt-get update && apt-get install -y --no-install-recommends xvfb && rm -rf /var/lib/apt/lists/*
+# xauth is a separate package on Debian and xvfb-run shells out to it: with
+# only xvfb installed the container builds cleanly and then dies on every
+# start with "xauth command not found" and exit status 3.
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the current directory contents into the container at /app
 COPY ./ /app/
