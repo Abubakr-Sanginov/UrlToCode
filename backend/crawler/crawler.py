@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional, cast
 from urllib.parse import urlparse, urlunparse
@@ -75,6 +77,11 @@ WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "playwright_worker.py")
 # budget over half an hour, and the user watches a frozen progress bar.
 MAX_CRAWL_SECONDS = 900
 
+# Slack on top of the crawl's own budget before the process is killed, for a
+# browser that has stopped answering. Its own clock is the primary limit; this
+# only catches the case where it wedges before noticing.
+GRACE_SECONDS = 120
+
 
 def _run_playwright_subprocess(
     start_url: str,
@@ -85,6 +92,7 @@ def _run_playwright_subprocess(
     llm_config: Optional[Dict[str, Any]] = None,
     responsive: bool = False,
     capture_states: bool = False,
+    report_progress: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
     """Run Playwright in a separate process.
 
@@ -105,7 +113,7 @@ def _run_playwright_subprocess(
     crawl_budget = min(per_page_budget * max_pages, MAX_CRAWL_SECONDS)
     # The worker stops itself first and prints what it has; this is only the
     # backstop for a wedged browser process.
-    subprocess_timeout = crawl_budget + 120
+    subprocess_timeout = crawl_budget + GRACE_SECONDS
 
     # The worker writes its pages here after every capture, so a killed or
     # overrunning crawl still hands back the pages it did get.
@@ -159,28 +167,109 @@ def _run_playwright_subprocess(
             return [item for item in cast(List[Any], payload) if isinstance(item, dict)], {}
         return [], {}
 
+    # The worker records each page in the partial file as it captures it, and
+    # nowhere else until it finishes. Watching that file is the only way to
+    # tell somebody the crawl is still moving - without it a run sits on
+    # "Starting crawl" for minutes showing 0 of 30, which from the outside is
+    # indistinguishable from a hang. That is not a cosmetic problem: people
+    # reload a page that looks stuck and pay for it twice.
+    last_reported = 0
+
+    def publish_if_moved() -> None:
+        nonlocal last_reported
+        if report_progress is None:
+            return
+        found = len(read_partial())
+        if found > last_reported:
+            last_reported = found
+            report_progress(found, max_pages)
+
     try:
         # Parameters go in over stdin: they carry the API key, and a command
         # line is readable by every process on the machine.
-        result = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, WORKER_SCRIPT, "-"],
-            input=params,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=subprocess_timeout,
         )
-        if result.stderr:
-            for line in result.stderr.strip().splitlines():
+        # Declared as Optional because Popen allows a process with no stdin;
+        # this one was asked for a pipe, so it has one.
+        worker_stdin = process.stdin
+        assert worker_stdin is not None
+        worker_stdin.write(params)
+        # Closed rather than left open: the worker reads to end of input, and
+        # a pipe held open is a worker waiting for parameters that will never
+        # come.
+        worker_stdin.close()
+
+        # Both pipes are drained on their own threads. Waiting without
+        # reading would deadlock: a responsive crawl writes megabytes of
+        # base64 screenshots to stdout, that fills the pipe buffer, and the
+        # worker blocks on a write while the parent blocks on a wait.
+        collected: Dict[str, List[str]] = {"out": [], "err": []}
+
+        def drain(stream: Any, key: str) -> None:
+            try:
+                text = stream.read()
+            except Exception:
+                text = ""
+            collected[key].append(text or "")
+
+        readers = [
+            threading.Thread(target=drain, args=(process.stdout, "out"), daemon=True),
+            threading.Thread(target=drain, args=(process.stderr, "err"), daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
+
+        deadline = time.monotonic() + subprocess_timeout
+        expired = False
+        while True:
+            try:
+                process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                publish_if_moved()
+                if time.monotonic() >= deadline:
+                    expired = True
+                    process.kill()
+                    break
+
+        for reader in readers:
+            reader.join(timeout=5)
+        publish_if_moved()
+        stdout = "".join(collected["out"])
+        stderr = "".join(collected["err"])
+
+        if stderr:
+            for line in stderr.strip().splitlines():
                 print(f"[Crawler] {line}")
-        if result.returncode != 0:
+
+        if expired:
+            # Same as the timeout this replaces: the browser is wedged, and
+            # whatever the crawl managed to capture is still worth keeping.
+            process.wait(timeout=10)
+
+        if process.returncode != 0 and not expired:
             salvaged = read_partial()
             if salvaged:
                 print(f"[Crawler] Worker crashed; using {len(salvaged)} salvaged pages")
                 return salvaged, {}, None
-            lines = (result.stderr or result.stdout or "").strip().splitlines()
+            lines = (stderr or stdout).strip().splitlines()
             reason = lines[-1][:300] if lines else "no output"
-            return [], {}, f"Playwright worker exited with code {result.returncode}: {reason}"
-        pages, api = split(json.loads(result.stdout))
+            return [], {}, f"Playwright worker exited with code {process.returncode}: {reason}"
+        if expired:
+            salvaged = read_partial()
+            if salvaged:
+                print(f"[Crawler] Worker timed out; using {len(salvaged)} salvaged pages")
+                return salvaged, {}, None
+            return [], {}, (
+                "The site took too long to crawl and no page finished loading. "
+                "Try a smaller page limit, or a site that loads faster."
+            )
+        pages, api = split(json.loads(stdout))
         return pages, api, None
     except subprocess.TimeoutExpired:
         salvaged = read_partial()
@@ -271,6 +360,17 @@ class SiteCrawler:
 
         await self._report_progress("Starting crawl (observe only)...", 0, self.max_pages)
 
+        # The crawl runs on a worker thread, which cannot await. Schedules the
+        # callback back onto the loop instead, so the counter a person is
+        # watching actually moves while the browser is working.
+        loop = asyncio.get_event_loop()
+
+        def report_from_thread(current: int, total: int) -> None:
+            asyncio.run_coroutine_threadsafe(
+                self._report_progress(f"Read {current} page(s)...", current, total),
+                loop,
+            )
+
         try:
             page_dicts, api, worker_error = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -283,6 +383,7 @@ class SiteCrawler:
                 self.llm_config,
                 self.responsive,
                 self.capture_states,
+                report_from_thread,
             )
         except Exception as e:
             return CrawlResult(base_url=base_url, error=f"Crawl failed: {e}")
