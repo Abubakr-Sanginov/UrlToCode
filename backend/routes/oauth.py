@@ -152,6 +152,12 @@ def _back_to_app(request: Request) -> str:
     return "/"
 
 
+# The name the session is handed over under, in the part of an address the
+# browser keeps to itself. Obvious in a support conversation, and not a name
+# one of the provider's own parameters would ever take.
+SESSION_FRAGMENT = "utc_session"
+
+
 def _failure(request: Request, message: str) -> RedirectResponse:
     """Back to the app, saying what went wrong.
 
@@ -340,5 +346,10 @@ async def callback(
         return _failure(request, str(exc))
 
     response = RedirectResponse(_back_to_app(request))
-    _issue(response, account)
+    # The token goes in the fragment, which the browser never sends to a
+    # server and never puts in a Referer. Handing the session over this way
+    # means it does not have to be a cookie set on this address and read
+    # again from another one, which is what the browser refuses to do.
+    token = _issue(response, account)
+    response.headers["location"] = f"{response.headers['location']}#{SESSION_FRAGMENT}={token}"
     return response

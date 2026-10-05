@@ -40,6 +40,39 @@ interface MeResponse {
 
 const SESSION_KEY = "utc.session";
 
+/** The name the session arrives under, in the part of an address the browser
+ *  keeps to itself. Matches SESSION_FRAGMENT in backend/routes/oauth.py. */
+export const SESSION_FRAGMENT = "utc_session";
+
+/**
+ * Pick a session up out of the address after signing in with a provider.
+ *
+ * The server ends its OAuth redirect with `#utc_session=<token>`. The
+ * fragment is the one part of an address the browser does not send to a
+ * server, so the token does not end up in a log or a Referer.
+ *
+ * Without this the session has to be a cookie set on the backend's address
+ * and read again by a page on the site's address - a third-party cookie,
+ * which browsers increasingly refuse to send no matter what SameSite says.
+ * That failure is invisible: the account is created, the cookie is set
+ * correctly, and the person lands back not signed in.
+ *
+ * Run before anything reads the session, so the very first request after
+ * coming back already carries it.
+ */
+export function adoptSessionFromAddress(): void {
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : "";
+  if (!hash) return;
+  const found = new URLSearchParams(hash).get(SESSION_FRAGMENT);
+  if (!found) return;
+  remember(found);
+  // Taken off the address at once: it stays in the history, in the bar, and
+  // in anything that screenshots the page.
+  window.history.replaceState({}, "", window.location.pathname + window.location.search);
+}
+
 /**
  * The signed session, kept where a websocket can reach it.
  *
@@ -57,6 +90,19 @@ function remember(token: string | null): void {
   } else {
     localStorage.setItem(SESSION_KEY, token);
   }
+}
+
+/**
+ * The session, sent as a header when there is one to send.
+ *
+ * Sent alongside the cookie rather than instead of it: a browser that still
+ * passes the cookie along does not need this, and one that has stopped
+ * passing it has nothing else. The server prefers the cookie when both are
+ * present.
+ */
+function sessionHeaders(): Record<string, string> {
+  const token = sessionToken();
+  return token ? { "X-Session-Token": token } : {};
 }
 
 /**
@@ -84,7 +130,7 @@ async function readError(response: Response, fallback: string): Promise<string> 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${HTTP_BACKEND_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...sessionHeaders() },
     // The session is a cookie, and the API is on another port.
     credentials: "include",
     body: JSON.stringify(body),
@@ -98,6 +144,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${HTTP_BACKEND_URL}${path}`, {
     credentials: "include",
+    headers: sessionHeaders(),
   });
   if (!response.ok) {
     throw new Error(await readError(response, "That did not work."));

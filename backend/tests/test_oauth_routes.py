@@ -193,7 +193,11 @@ class TestCallback:
         response = self.sign_in_through(client, state)
 
         assert response.status_code in (302, 307)
-        assert response.headers["location"] == "/"
+        # The fragment carries the session as well. It is not a replacement
+        # for the cookie - both are issued - but it is what survives a
+        # browser that will not send a cookie back across to this address.
+        assert response.headers["location"].startswith("/")
+        assert f"#{oauth_module.SESSION_FRAGMENT}=" in response.headers["location"]
         assert accounts_route.SESSION_COOKIE in response.cookies
 
     def test_the_cookie_opens_the_account_the_identity_belongs_to(

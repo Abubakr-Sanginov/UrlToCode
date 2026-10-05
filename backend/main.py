@@ -5,6 +5,7 @@ load_dotenv()
 
 
 import sys
+from typing import Any, Optional
 
 from contextlib import asynccontextmanager
 
@@ -29,9 +30,10 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from config import CORS_ALLOWED_ORIGINS, IS_DEBUG_ENABLED
+from routes.accounts import SESSION_COOKIE
 from routes import (
     admin,
     capabilities,
@@ -87,6 +89,62 @@ async def lifespan(app: FastAPI):
 app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None, lifespan=lifespan)
 configure_uploaded_asset_routes(app)
 
+
+class SessionHeader:
+    """Let a session arrive in a header as well as a cookie.
+
+    A cookie set while the browser is on the backend's address has to be sent
+    again by a page on the site's address, which makes it a third-party
+    cookie - and browsers increasingly refuse to send those no matter what
+    SameSite says. Nothing else about the flow is broken: the account is
+    created, the cookie is set correctly, and the person lands back not
+    signed in.
+
+    The token is folded into the request's cookies before routing, so every
+    route keeps reading exactly one cookie and none of them change. A real
+    cookie still wins: a browser that does send one has nothing to gain from
+    this.
+
+    Plain ASGI on purpose. Behind @app.middleware the downstream call is made
+    with the scope the middleware was handed, so a rebuilt request is quietly
+    ignored - which is a bug that shows up as a passing test and a broken
+    sign-in.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> Any:
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        token: Optional[bytes] = None
+        has_cookie = False
+        has_cookie_header = False
+        name = f"{SESSION_COOKIE}=".encode("latin-1")
+        for key, value in scope.get("headers", []):
+            lowered = key.lower()
+            if lowered == b"x-session-token" and token is None:
+                token = value
+            elif lowered == b"cookie":
+                has_cookie_header = True
+                if name in value:
+                    has_cookie = True
+
+        if token is None or has_cookie:
+            return await self.app(scope, receive, send)
+
+        pair = name + token
+        rebuilt = []
+        for key, value in scope.get("headers", []):
+            if key.lower() == b"cookie":
+                value = value + b"; " + pair
+            rebuilt.append((key, value))
+        if not has_cookie_header:
+            rebuilt.append((b"cookie", pair))
+
+        return await self.app({**scope, "headers": rebuilt}, receive, send)
+
 # Configure CORS settings
 app.add_middleware(
     CORSMiddleware,
@@ -114,3 +172,8 @@ app.include_router(oauth.router)
 app.include_router(shares.router)
 app.include_router(telegram.router)
 app.include_router(admin.router)
+
+# Outermost of the three, so it sees the headers as they arrived. CORS runs
+# inside it, which is why the preflight for X-Session-Token has to be allowed
+# explicitly: the header list below is what the browser is told it may send.
+app.add_middleware(SessionHeader)

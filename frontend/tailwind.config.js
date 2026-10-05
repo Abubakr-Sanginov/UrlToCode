@@ -24,6 +24,12 @@ module.exports = {
           "Segoe UI",
           "sans-serif",
         ],
+        // Headlines on the public page only. The same superfamily as the
+        // body text, so the two do not argue, but a serif sitting next to
+        // Plex Sans is unmistakably a different register — the page reads
+        // like a document rather than a pitch. The app itself does not use
+        // it: an editor is a tool, and a tool set in a serif is a brochure.
+        display: ['"IBM Plex Serif"', '"IBM Plex Sans"', "Georgia", "serif"],
         mono: [
           '"JetBrains Mono"',
           '"Fira Code"',

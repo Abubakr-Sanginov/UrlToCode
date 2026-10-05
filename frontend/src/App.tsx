@@ -25,7 +25,7 @@ import {
 // import TipLink from "./components/messages/TipLink";
 import { useAppStore } from "./store/app-store";
 import { useProjectStore } from "./store/project-store";
-import { openProject } from "./lib/accounts";
+import { adoptSessionFromAddress, openProject } from "./lib/accounts";
 import { GENERATED_FILE_PREFIX } from "./lib/projectFiles";
 import { startProject } from "./lib/payments";
 import { useDesignSystems } from "./hooks/useDesignSystems";
@@ -157,6 +157,14 @@ function App() {
       openSignIn();
     }
   }, [openSignIn]);
+
+  // Come back from a provider: the session is in the address rather than in a
+  // cookie, so it has to be taken before anything asks who is signed in.
+  // Before the read on purpose - the first request is the one that decides
+  // whether the app opens the start screen or the workspace.
+  useEffect(() => {
+    adoptSessionFromAddress();
+  }, []);
 
   // First visit to the admin screen, with no link to follow: open it when
   // the address carries the marker. Once the operator has typed their
