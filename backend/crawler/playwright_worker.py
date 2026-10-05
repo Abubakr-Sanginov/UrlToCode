@@ -805,6 +805,58 @@ def _write_partial(
         print(f"[Worker] Failed to write partial output: {e}", file=sys.stderr, flush=True)
 
 
+def _looks_like_no_display(error: Exception) -> bool:
+    """Whether this failure is a missing display rather than anything else.
+
+    Chromium says "Missing X server or $DISPLAY" when there is no display to
+    open, and libgtk raises about the display when it is not there either.
+    A browser that was never downloaded says something about an executable
+    that does not exist, and is a different problem with a different fix.
+    """
+    text = str(error).lower()
+    return any(
+        clue in text
+        for clue in ("display", "x server", "xvfb", "gtk", "cannot open display")
+    )
+
+
+async def _launch_chromium(p: Any, headless: bool) -> Any:
+    """Start Chromium, falling back to headless when there is no display.
+
+    Headed is tried first and is what the crawler wants: Cloudflare-style bot
+    checks flag headless Chromium and serve "Just a moment..." instead of the
+    site. But a headed browser needs an X display, and a container deployed
+    without one - Render's native Python runtime, most obviously - has none.
+    There the launch fails outright, the worker dies, and the person gets an
+    error with no clone and no explanation.
+
+    A half-working clone beats no clone. If the display is the only thing
+    missing, the crawl goes ahead headless and says so, because on a site
+    behind a bot check the result will be worse and somebody should be able to
+    see why afterwards rather than wonder.
+
+    Only a failure that looks like a missing display is retried. Anything
+    else - a browser that was never downloaded, a crash from bad arguments -
+    is a real fault and is left to surface rather than being papered over
+    with a different mode that would fail the same way.
+    """
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+    ]
+    try:
+        return await p.chromium.launch(headless=headless, args=args)
+    except Exception as error:
+        if headless or not _looks_like_no_display(error):
+            raise
+        print(
+            "[Worker] No display for a headed browser; crawling headless "
+            "instead. Sites behind a bot check may refuse this one."
+        )
+        return await p.chromium.launch(headless=True, args=args)
+
+
 async def crawl(
     start_url: str,
     max_pages: int,
@@ -853,14 +905,7 @@ async def crawl(
         # Headed by default: Cloudflare-style bot checks flag headless Chromium
         # and serve "Just a moment..." instead of the site. Headless is opt-in
         # (CRAWLER_HEADLESS=1) for machines with no display.
-        browser = await p.chromium.launch(
-            headless=headless,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
+        browser = await _launch_chromium(p, headless)
         context = await browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
