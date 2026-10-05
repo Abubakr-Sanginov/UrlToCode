@@ -16,9 +16,10 @@ telegram_auth proved.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Union, cast
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request
@@ -43,6 +44,32 @@ def bot_token() -> str:
 
 def webhook_secret() -> str:
     return os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+
+
+# Who gets told when somebody buys something. The Stars themselves are the
+# bot's, and are withdrawn through @Fragment by this person - the bot cannot
+# move them, and there is no API for it to do so.
+#
+# Set in the environment rather than written in so the person who really owns
+# this can be moved without a deploy. Defaults to the account this was built
+# for; TELEGRAM_OWNER_ID overrides it.
+DEFAULT_OWNER_ID = 7_871_227_102
+
+
+def owner_chat_id() -> Optional[int]:
+    """Somebody to notify about payments, or nobody."""
+    raw = str(os.environ.get("TELEGRAM_OWNER_ID", "") or "").strip()
+    if not raw:
+        return DEFAULT_OWNER_ID
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "TELEGRAM_OWNER_ID is set to something that is not a number; "
+            "nobody will be told about payments."
+        )
+        return None
+    return value or None
 
 
 def mini_app_url() -> str:
@@ -97,6 +124,10 @@ class WebhookUpdate(BaseModel):
     update_id: int = 0
     message: Optional[Dict[str, Any]] = None
     pre_checkout_query: Optional[Dict[str, Any]] = None
+    # Telegram 10.2: a subscription that was cancelled or ran out. Without
+    # this the account would keep its paid plan until someone happened to
+    # load a page, and a cancelled customer would be told nothing.
+    subscription: Optional[Dict[str, Any]] = None
 
 
 def invoice_secret() -> str:
@@ -180,6 +211,9 @@ async def webhook(
     # trusted further than that: each re-checks its own payload.
     if update.pre_checkout_query is not None:
         return await _handle_pre_checkout(update.pre_checkout_query)
+
+    if update.subscription is not None:
+        return await _handle_subscription_update(update.subscription)
 
     message: Dict[str, Any] = update.message or {}
     payment = message.get("successful_payment")
@@ -268,7 +302,12 @@ async def _send_plan_invoice(chat_id: str, claim: Dict[str, Any]) -> JSONRespons
             ),
             "payload": accounts.sign_invoice(int(claim["owner"]), tier, invoice_secret()),
             "currency": "XTR",
-            "prices": [{"label": f"{tier.title()} plan", "amount": stars}],
+            # The same period as the website's invoice. Without it this is a
+            # one-off payment on a chat, while the website offers a month.
+            "subscription_period": accounts.SUBSCRIPTION_PERIOD,
+            "prices": [
+                {"label": f"{tier.title()} plan, a month", "amount": stars}
+            ],
         },
     )
     if answer is None:
@@ -417,8 +456,12 @@ async def create_invoice(
             ),
             "payload": payload,
             "currency": "XTR",
+            # Without this the invoice is a one-off payment, whatever the
+            # description above says it is. With it, Telegram charges the same
+            # amount every thirty days and tells us when each month ends.
+            "subscription_period": accounts.SUBSCRIPTION_PERIOD,
             "prices": [
-                {"label": f"{tier.title()} plan", "amount": stars}
+                {"label": f"{tier.title()} plan, a month", "amount": stars}
             ],
         },
     )
@@ -453,11 +496,62 @@ async def _handle_pre_checkout(query: Dict[str, Any]) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-async def _handle_successful_payment(payment: Dict[str, Any]) -> JSONResponse:
-    """The money has moved. Raise the plan.
+async def _handle_subscription_update(subscription: Dict[str, Any]) -> JSONResponse:
+    """A subscription was cancelled, or ran out.
 
-    The charge id is Telegram's own and is recorded as the primary key, so
-    a webhook arriving twice raises one plan rather than two and one row.
+    The plan is dated rather than switched off on the spot. Telegram says
+    when access actually ends, and somebody who paid for the rest of the
+    month keeps it - taking it away here would be shortening the month they
+    already paid for because they cancelled a renewal they were not going to
+    be charged for.
+
+    The owner is told, because a lapse is a sale that stopped rather than
+    one that never happened.
+    """
+    expires_at = subscription.get("expires_at")
+    telegram_user_id = subscription.get("user", {}).get("id")
+    account = None
+    if isinstance(telegram_user_id, int):
+        account = accounts.account_for_telegram_id(telegram_user_id)
+
+    if account is not None and expires_at is not None:
+        accounts.set_plan_until(account.id, float(expires_at))
+
+    logger.info(
+        "Subscription changed: user=%s expires_at=%s",
+        telegram_user_id, expires_at,
+    )
+
+    chat_id = owner_chat_id()
+    if chat_id is not None:
+        who = account.email if account else f"telegram user {telegram_user_id}"
+        try:
+            await send_message(
+                chat_id,
+                "\n".join(
+                    [
+                        "Subscription ended",
+                        f"Account: {who}",
+                        f"Access until: {_when(float(expires_at) if expires_at is not None else None)}",
+                    ]
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Could not tell the owner that a subscription ended",
+                exc_info=True,
+            )
+    return JSONResponse({"ok": True})
+
+
+async def _handle_successful_payment(payment: Dict[str, Any]) -> JSONResponse:
+    """The money has moved. Raise the plan and tell the owner.
+
+    `subscription_expiration_date` is Telegram's own statement of when the
+    month runs out, and it is used as given rather than computed as "now plus
+    thirty days". The two disagree whenever a renewal arrives late or a clock
+    is wrong, and Telegram is the one that will actually cut the access off,
+    so the plan is dated to match Telegram rather than to our arithmetic.
     """
     claim = accounts.read_invoice(
         str(payment.get("invoice_payload") or ""), invoice_secret()
@@ -470,22 +564,88 @@ async def _handle_successful_payment(payment: Dict[str, Any]) -> JSONResponse:
         return JSONResponse({"ok": False, "reason": "unverified payload"})
 
     stars = int(payment.get("telegram_payment_amount") or 0)
+    tier = str(claim["tier"])
+    raw_expiry = payment.get("subscription_expiration_date")
+    expires_at = float(raw_expiry) if raw_expiry else None
+
     recorded = accounts.record_payment(
-        charge_id, int(claim["owner"]), str(claim["tier"]), stars
+        charge_id, int(claim["owner"]), tier, stars, expires_at
     )
     logger.info(
-        "Stars payment recorded: tier=%s stars=%s new=%s",
-        claim["tier"], stars, recorded,
+        "Stars payment recorded: tier=%s stars=%s until=%s new=%s",
+        tier, stars, expires_at, recorded,
     )
+    if recorded:
+        await notify_owner_of_payment(
+            int(claim["owner"]), tier, stars, expires_at, payment
+        )
     return JSONResponse({"ok": True})
 
 
+def _when(unix_seconds: Optional[float]) -> str:
+    """A date Telegram can put in a message, in the reader's own timezone."""
+    if unix_seconds is None:
+        return "not stated"
+    return datetime.datetime.fromtimestamp(
+        unix_seconds, datetime.timezone.utc
+    ).strftime("%d %b %Y, %H:%M UTC")
+
+
+async def notify_owner_of_payment(
+    owner_id: int,
+    tier: str,
+    stars: int,
+    expires_at: Optional[float],
+    payment: Dict[str, Any],
+) -> bool:
+    """Tell the bot's owner that a subscription was paid for.
+
+    Sent only for a payment that was actually counted. A webhook that
+    Telegram repeats would otherwise report the same sale twice, and an
+    owner reading a growing list of purchases has no way to tell which of
+    them happened.
+    """
+    chat_id = owner_chat_id()
+    if chat_id is None:
+        return False
+    charge_id = str(payment.get("telegram_payment_charge_id") or "")
+
+    account = accounts.account_by_id(owner_id)
+    who = account.email if account else f"account {owner_id}"
+
+    lines = [
+        f"Subscription paid: {tier.title()}",
+        f"Account: {who}",
+        f"Stars: {stars} (about {stars / accounts.STARS_PER_DOLLAR:.2f} dollars before Telegram's cut)",
+        f"Paid until: {_when(expires_at)}",
+        f"Renewing monthly at {stars} Stars until cancelled.",
+    ]
+    if charge_id:
+        # What @Fragment will show against this payment, and what
+        # refundStarPayment would take if the purchase had to be undone.
+        lines.append(f"Charge: {charge_id}")
+
+    try:
+        return await send_message(chat_id, "\n".join(lines))
+    except Exception:
+        # The money is already taken and the plan is already raised. Failing
+        # to send a receipt must not take the payment down with it.
+        logger.warning(
+            "Could not tell the owner that a payment was recorded", exc_info=True
+        )
+        return False
+
+
 async def send_message(
-    chat_id: str,
+    chat_id: Union[str, int],
     text: str,
     reply_markup: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Say something in Telegram. False when it could not be sent.
+
+    A chat id is a number and a username is a string; Telegram accepts either
+    and the owner is identified by the former, so both are allowed here
+    rather than being turned into a string somewhere.
 
     Never raises: a notification that cannot be delivered is a small
     disappointment, and turning it into an error would fail the clone the

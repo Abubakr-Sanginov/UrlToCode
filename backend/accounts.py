@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Set, cast
 
 import db
 from db import Database
@@ -104,6 +104,16 @@ def stars_for(dollars: int) -> int:
 STAR_PRICES: Dict[str, int] = {
     tier: stars_for(dollars) for tier, dollars in TIER_DOLLARS.items()
 }
+
+# How long one payment buys, in seconds. Telegram wants a duration here and
+# only accepts a handful of them; 2592000 is thirty days, checked against the
+# live API rather than taken on trust - 30 is refused with
+# SUBSCRIPTION_PERIOD_INVALID.
+#
+# These prices are a month, not a purchase. The wording on the page has said
+# so from the start while the invoice was not passing this, which made every
+# payment a one-off while the description read as a subscription.
+SUBSCRIPTION_PERIOD = 2_592_000
 
 
 def test_stars() -> Optional[int]:
@@ -230,6 +240,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     tier TEXT NOT NULL DEFAULT 'free',
+    tier_expires_at REAL,
     created_at REAL NOT NULL
 );
 
@@ -303,6 +314,17 @@ CREATE TABLE IF NOT EXISTS payments (
     FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS subscription_charges (
+    charge_id TEXT NOT NULL,
+    cycle REAL NOT NULL,
+    owner_id INTEGER NOT NULL,
+    tier TEXT NOT NULL,
+    stars INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (charge_id, cycle),
+    FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS projects_by_owner ON projects (owner_id);
 """
 
@@ -312,6 +334,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     tier TEXT NOT NULL DEFAULT 'free',
+    tier_expires_at DOUBLE PRECISION,
     created_at DOUBLE PRECISION NOT NULL
 );
 
@@ -381,13 +404,49 @@ CREATE TABLE IF NOT EXISTS payments (
     FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS subscription_charges (
+    charge_id TEXT NOT NULL,
+    cycle DOUBLE PRECISION NOT NULL,
+    owner_id BIGINT NOT NULL,
+    tier TEXT NOT NULL,
+    stars BIGINT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (charge_id, cycle),
+    FOREIGN KEY (owner_id) REFERENCES accounts (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS projects_by_owner ON projects (owner_id);
 """
+
+
+def _columns_of(table: str) -> Set[str]:
+    """Which columns a table already has, on either engine."""
+    with _connect() as db_:
+        if db.using_postgres():
+            rows = db_.execute(
+                "SELECT column_name FROM information_schema.columns"
+                " WHERE table_name = ?",
+                (table,),
+            ).fetchall()
+            return {str(row["column_name"]) for row in rows}
+        rows = db_.execute(f"PRAGMA table_info({table})").fetchall()
+        return {str(row["name"]) for row in rows}
 
 
 def _create_schema() -> None:
     with _connect() as db_:
         db_.script(_SQLITE_SCHEMA if not db.using_postgres() else _POSTGRES_SCHEMA)
+
+    # A database that already exists was made by an older build, and
+    # CREATE TABLE IF NOT EXISTS does nothing at all for a table that is
+    # already there. The new subscription_charges table is created either way
+    # because it did not exist; the new column on accounts has to be added by
+    # hand, or every existing account would read as having no expiry and a
+    # paid plan would never lapse.
+    if "tier_expires_at" not in _columns_of("accounts"):
+        kind = "DOUBLE PRECISION" if db.using_postgres() else "REAL"
+        with _connect() as db_:
+            db_.execute(f"ALTER TABLE accounts ADD COLUMN tier_expires_at {kind}")
 
 
 def _ready() -> None:
@@ -520,12 +579,41 @@ def _midnight() -> float:
 
 
 def _current_tier(account: Account) -> str:
+    """The plan this account is on as it stands, not the one it was issued.
+
+    A paid plan lasts a month, so the tier in the row is a promise rather
+    than a fact. Once the month is up the account reads as free again, and
+    the stored tier is cleared so the next payment starts from a clean slate
+    instead of extending from a lapsed one.
+
+    An account with no expiry is not on a subscription and never lapses -
+    which is what every account predating this looked like, and what an
+    administrator's manual grant looks like.
+    """
     _ready()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT tier FROM accounts WHERE id = ?", (account.id,)
+            "SELECT tier, tier_expires_at FROM accounts WHERE id = ?", (account.id,)
         ).fetchone()
-    return str(row["tier"]) if row is not None else account.tier
+
+    if row is None:
+        return account.tier
+
+    tier = str(row["tier"])
+    expires = row["tier_expires_at"]
+    if tier == "free" or expires is None:
+        return tier
+
+    if float(expires) > time.time():
+        return tier
+
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE accounts SET tier = 'free', tier_expires_at = NULL"
+            " WHERE id = ? AND tier = ?",
+            (account.id, tier),
+        )
+    return "free"
 
 
 def _limits(account: Account) -> Dict[str, int]:
@@ -673,6 +761,41 @@ def revoke_share(account: Account, token: str) -> bool:
             (time.time(), token, account.id),
         ).rowcount
     return changed == 1
+
+
+def account_for_telegram_id(telegram_user_id: int) -> Optional[Account]:
+    """The account behind a Telegram user, if there is one.
+
+    None rather than a new account, because this is asked about somebody who
+    already existed: a cancellation for a stranger must not create a row for
+    them, and `account_for_telegram` would happily make one.
+    """
+    _ready()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT accounts.id FROM telegram_links"
+            " JOIN accounts ON accounts.id = telegram_links.owner_id"
+            " WHERE telegram_links.telegram_user_id = ?",
+            (str(telegram_user_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return account_by_id(int(row["id"]))
+
+
+def set_plan_until(account_id: int, expires_at: Optional[float]) -> None:
+    """Move the day a paid plan runs out, without touching the plan itself.
+
+    Used when Telegram cancels a renewal. The account keeps what it paid for
+    until the moment Telegram says access ends, and `_current_tier` does the
+    demotion when that moment passes.
+    """
+    _ready()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE accounts SET tier_expires_at = ? WHERE id = ?",
+            (expires_at, account_id),
+        )
 
 
 def account_for_telegram(
@@ -942,34 +1065,68 @@ def _to_base36(number: int) -> str:
 
 
 def record_payment(
-    charge_id: str, owner_id: int, tier: str, stars: int
+    charge_id: str,
+    owner_id: int,
+    tier: str,
+    stars: int,
+    expires_at: Optional[float] = None,
 ) -> bool:
     """Note a payment and raise the plan. False if it was already counted.
 
-    The charge id is the primary key, so the same payment arriving twice -
-    and Telegram does repeat a webhook - is recorded once. Recording before
-    granting is what makes that true: if the process dies between the two,
-    the plan is not raised and the payment is visible as unpaid rather than
-    paid for nothing.
+    `expires_at` is the moment Telegram says the subscription runs out.
+    Left out, the payment is a one-off and goes in the same table as before.
+    Given one, it is a month of a recurring plan and goes in
+    subscription_charges instead.
+
+    Two tables rather than one because the key differs. A one-off is
+    identified by its charge id alone, which is also what stops Telegram
+    repeating a webhook from granting twice. A subscription is charged again
+    every month and there is no guarantee that a later month carries a
+    different charge id, so the key is the charge id *and* the cycle: a
+    repeated webhook for the same month is still counted once, and the same
+    charge arriving again next month is still counted. Either way the plan
+    is raised exactly once per payment.
+
+    The expiry is only ever moved forwards. Renewals can arrive out of order,
+    and a late-arriving older one must not cut short a month already paid
+    for.
     """
     _ready()
     with _connect() as conn:
         try:
-            # execute, not insert: payments is keyed on the charge id and has
-            # no `id` of its own to hand back, and db.insert() appends
-            # RETURNING id on Postgres. SQLite forgives that through
-            # lastrowid, so this only ever failed on the deployed engine -
-            # after somebody had already paid.
-            conn.execute(
-                "INSERT INTO payments (charge_id, owner_id, tier, stars, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (charge_id, owner_id, tier, stars, time.time()),
-            )
+            if expires_at is None:
+                # execute, not insert: payments is keyed on the charge id
+                # and has no `id` of its own to hand back, and db.insert()
+                # appends RETURNING id on Postgres. SQLite forgives that
+                # through lastrowid, so this only ever failed on the
+                # deployed engine - after somebody had already paid.
+                conn.execute(
+                    "INSERT INTO payments (charge_id, owner_id, tier, stars,"
+                    " created_at) VALUES (?, ?, ?, ?, ?)",
+                    (charge_id, owner_id, tier, stars, time.time()),
+                )
+                conn.execute(
+                    "UPDATE accounts SET tier = ?, tier_expires_at = NULL"
+                    " WHERE id = ?",
+                    (tier, owner_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO subscription_charges (charge_id, cycle,"
+                    " owner_id, tier, stars, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (charge_id, float(expires_at), owner_id, tier, stars,
+                     time.time()),
+                )
+                conn.execute(
+                    "UPDATE accounts"
+                    " SET tier = ?,"
+                    "     tier_expires_at = MAX(COALESCE(tier_expires_at, 0), ?)"
+                    " WHERE id = ?",
+                    (tier, float(expires_at), owner_id),
+                )
         except db.integrity_error():
             return False
-        conn.execute(
-            "UPDATE accounts SET tier = ? WHERE id = ?", (tier, owner_id)
-        )
     return True
 
 

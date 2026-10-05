@@ -88,19 +88,19 @@ const PLANS = [
   {
     tier: "Starter",
     price: "360",
-    unit: "Stars",
+    unit: "Stars a month",
     lines: ["10 projects", "25 clones a day", "Priority queue"],
   },
   {
     tier: "Pro",
     price: "1080",
-    unit: "Stars",
+    unit: "Stars a month",
     lines: ["50 projects", "Unlimited daily runs", "Visual comparison included"],
   },
   {
     tier: "Studio",
     price: "3240",
-    unit: "Stars",
+    unit: "Stars a month",
     lines: ["Unlimited projects", "Team seats", "Shared history"],
   },
 ] as const;
@@ -109,6 +109,14 @@ const QUESTIONS = [
   {
     q: "Do I keep what the clone produces?",
     a: "Yes. The files are yours to read, edit and run on your own machine. Nothing is watermarked and nothing stops working if you stop paying.",
+  },
+  {
+    q: "What happens when the month is over?",
+    a: "The plan drops back to Free and your projects and files stay exactly where they are. You lose the higher limits, not your work. Nothing is deleted and nothing is held to ransom.",
+  },
+  {
+    q: "Can I cancel the renewal?",
+    a: "Any time, inside Telegram. You keep the plan until the end of the month you have already paid for, and it does not charge again.",
   },
   {
     q: "What happens to a site that is behind a login?",
@@ -124,7 +132,7 @@ const QUESTIONS = [
   },
   {
     q: "Why Telegram Stars?",
-    a: "Because there is no card to enter and no merchant account to lose. The payment happens inside Telegram, and the bot delivers the invoice.",
+    a: "Because there is no card to enter and no merchant account to lose. The payment happens inside Telegram, renews there on its own, and the bot delivers the invoice.",
   },
 ] as const;
 
@@ -374,8 +382,10 @@ export default function WelcomePage() {
             <div>
               <h2 className="font-display text-3xl tracking-tight">Plans</h2>
               <p className="mt-3 max-w-xl text-foreground-muted">
-                Paid with Telegram Stars, inside Telegram. There is no card
-                anywhere in this.
+                Paid with Telegram Stars, inside Telegram. There is no card anywhere in
+                this. Every plan is a month that renews on its own; cancel
+                inside Telegram and you keep the plan until the month you
+                paid for is over.
               </p>
             </div>
           </div>
