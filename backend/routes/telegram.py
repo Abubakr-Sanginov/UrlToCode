@@ -421,6 +421,56 @@ async def create_pay_link(
     }
 
 
+@router.get("/balance")
+async def star_balance(
+    user: TelegramUser = Depends(require_mini_app_user),
+) -> Dict[str, Any]:
+    """How many Stars the bot has been paid, for the bot's owner only.
+
+    Telegram has no method that hands the balance over - there is no way to
+    ask the Bot API "how much do I have" - so the balance is worked out from
+    the transaction list, which is the same money seen from the other side.
+    Withdrawals are what bring the sum below the total paid.
+
+    The check is on the signed Telegram id rather than on anything the page
+    says about itself, because a button that is merely not drawn is not a
+    thing anybody can be stopped from calling. Telegram signed the number,
+    so there is nothing here to forge.
+    """
+    if owner_chat_id() is None or user.id != owner_chat_id():
+        raise HTTPException(
+            status_code=403, detail="That is not the bot owner's account."
+        )
+
+    answer = await _telegram_call(
+        "getStarTransactions", {"limit": 100, "offset": 0}
+    )
+    if answer is None:
+        raise HTTPException(
+            status_code=502, detail="Telegram would not answer with the balance."
+        )
+
+    result: Dict[str, Any] = answer.get("result") or {}
+    transactions: List[Dict[str, Any]] = result.get("transactions") or []
+    total = sum(int(t.get("amount") or 0) for t in transactions)
+    paid_in = sum(
+        int(t.get("amount") or 0) for t in transactions
+        if int(t.get("amount") or 0) > 0
+    )
+
+    return {
+        "balance": total,
+        "paidIn": paid_in,
+        "transactions": len(transactions),
+        # Telegram does not publish the point at which a balance may be
+        # withdrawn, so this does not guess one. It is a real reason the
+        # balance cannot be taken out yet, and a wrong number would send
+        # somebody off to wait for money that is never going to arrive.
+        "withdrawable": None,
+        "note": "Telegram has no way to ask a bot for its balance. This is the sum of its transactions.",
+    }
+
+
 @router.post("/invoice")
 async def create_invoice(
     body: InvoiceRequest,

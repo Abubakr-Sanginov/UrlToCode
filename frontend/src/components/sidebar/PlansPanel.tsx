@@ -3,6 +3,7 @@ import { LuCheck, LuSparkles } from "react-icons/lu";
 import { TariffTier, buyPlan, planLinkInBot, tariff } from "../../lib/payments";
 import { useAccountStore } from "../../store/account-store";
 import { isInsideTelegram } from "../../lib/telegram";
+import { StarBalanceButton } from "../balance/StarBalanceButton";
 
 const ALLOWANCES: Record<string, string> = {
   starter: "10 projects, 10 a day, 1 link a month",
@@ -83,6 +84,11 @@ export function PlansPanel({ currentTier }: { currentTier: string }) {
           {error}
         </p>
       )}
+
+      {/* The bot owner's own Stars balance. Draws itself only when the server
+          says the signed Telegram id is the owner's, so it is never visible
+          to anybody else - and cannot be revealed by editing the page. */}
+      <StarBalanceButton />
 
       {tiers.map((tier) => {
         const isCurrent = tier.tier === currentTier;

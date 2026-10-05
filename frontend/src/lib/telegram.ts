@@ -91,6 +91,40 @@ export async function signInThroughTelegram(): Promise<boolean> {
 }
 
 /**
+ * The bot's Stars balance - the owner's alone.
+ *
+ * Resolves to null for anybody else, and that is the point: the button is
+ * decided by what the server answers, not by what the page draws. A button
+ * that is merely hidden is not a thing anybody can be stopped from pressing,
+ * so the server is asked and it is the server that says no.
+ */
+export interface StarBalance {
+  balance: number;
+  paidIn: number;
+  transactions: number;
+  withdrawable: number | null;
+  note: string;
+}
+
+export async function starBalance(): Promise<StarBalance | null> {
+  const app = telegramWebApp();
+  if (!app || !app.initData) return null;
+
+  try {
+    const response = await fetch(`${HTTP_BACKEND_URL}/api/telegram/balance`, {
+      headers: { "X-Telegram-Auth": app.initData },
+      credentials: "include",
+    });
+    // 403 is the answer for anybody who is not the owner. It is an ordinary
+    // outcome here rather than a failure, so it is not an error.
+    if (!response.ok) return null;
+    return (await response.json()) as StarBalance;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Ready the Mini App window.
  *
  * Called once at startup. Without `ready()` Telegram keeps showing its own
