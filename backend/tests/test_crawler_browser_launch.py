@@ -114,6 +114,70 @@ class TestFailuresThatAreNotADisplay:
         assert chromium.launches == [True]
 
 
+class TestNoticingThereIsNoDisplayBeforeLaunching:
+    """Waiting for a headed launch to fail is waiting for the timeout.
+
+    On Linux a Chromium with nowhere to draw can sit waiting for an X server
+    that is never coming, producing no output at all. That is what a deployed
+    worker with no Xvfb does, and it is why the crawl ended at the subprocess
+    timeout looking like a hang rather than reporting anything.
+    """
+
+    def test_linux_without_display_says_so(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        assert worker._no_display_here() is True
+
+    def test_linux_with_a_display_is_left_headed(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":99")
+
+        assert worker._no_display_here() is False
+
+    @pytest.mark.parametrize("platform", ["win32", "darwin"])
+    def test_other_platforms_are_never_affected(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str
+    ):
+        """DISPLAY is an X11 thing. Windows and macOS have screens without it,
+        so its absence must not be read as having no display."""
+        monkeypatch.setattr(worker.sys, "platform", platform)
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        assert worker._no_display_here() is False
+
+    def test_it_does_not_ask_for_a_window_it_cannot_open(
+        self, monkeypatch: pytest.MonkeyPatch, capsys
+    ):
+        monkeypatch.setattr(worker.sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        # Refuses a window and accepts headless, so a headed attempt would
+        # show up as a second launch rather than as success.
+        chromium = FakeChromium(refuse_when=False)
+        p = FakePlaywright(chromium)
+
+        browser = asyncio.run(worker._launch_chromium(p, headless=False))
+
+        assert browser == "browser(headless=True)"
+        assert chromium.launches == [True], "it tried headed anyway"
+        assert "DISPLAY" in capsys.readouterr().out
+
+    def test_a_machine_with_a_display_still_gets_a_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The whole reason for headed: bot checks serve the check page to a
+        headless browser. Deciding this wrongly makes every clone worse."""
+        monkeypatch.setattr(worker.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":99")
+        chromium = FakeChromium(refuse_when=True)
+        p = FakePlaywright(chromium)
+
+        browser = asyncio.run(worker._launch_chromium(p, headless=False))
+
+        assert browser == "browser(headless=False)"
+        assert chromium.launches == [False]
+
+
 class TestTellingTheTwoApart:
     @pytest.mark.parametrize(
         "message",

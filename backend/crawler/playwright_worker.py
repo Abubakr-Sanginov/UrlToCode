@@ -805,6 +805,26 @@ def _write_partial(
         print(f"[Worker] Failed to write partial output: {e}", file=sys.stderr, flush=True)
 
 
+def _no_display_here() -> bool:
+    """Whether this machine has no screen to open a window on.
+
+    Asked before launching rather than inferred from the failure, because on
+    Linux a headed Chromium with nowhere to draw does not always fail - it
+    can sit waiting for an X server that is never coming. That is what a
+    deployed worker with no Xvfb does: it produces no output at all, the
+    parent sees an empty log, and the crawl ends at the subprocess timeout
+    minutes later looking like a hang. Waiting for the failure to tell us is
+    waiting for the timeout.
+
+    DISPLAY is the X11 variable and is unset in a container with no Xvfb.
+    Windows and macOS do not use it, so they are never affected by its
+    absence.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    return not os.environ.get("DISPLAY", "").strip()
+
+
 def _looks_like_no_display(error: Exception) -> bool:
     """Whether this failure is a missing display rather than anything else.
 
@@ -845,6 +865,13 @@ async def _launch_chromium(p: Any, headless: bool) -> Any:
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
     ]
+    if not headless and _no_display_here():
+        print(
+            "[Worker] No DISPLAY on this machine, so there is nowhere to open "
+            "a window. Crawling headless. Sites behind a bot check may serve "
+            "their check page instead of the site."
+        )
+        headless = True
     try:
         return await p.chromium.launch(headless=headless, args=args)
     except Exception as error:
