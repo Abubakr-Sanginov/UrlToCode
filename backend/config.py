@@ -56,6 +56,11 @@ SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "").strip()
 # Set CRAWLER_HEADLESS=1 where no display exists (Docker, CI, a server).
 CRAWLER_HEADLESS = _env_flag("CRAWLER_HEADLESS")
 
+# For hosts with 512 MB of RAM, where Chromium plus the API is enough to get
+# the instance killed. Trades completeness for staying alive: no videos, no
+# live view, a leaner browser.
+CRAWLER_LOW_MEMORY = _env_flag("CRAWLER_LOW_MEMORY")
+
 # Debugging-related
 IS_DEBUG_ENABLED = _env_flag("IS_DEBUG_ENABLED")
 DEBUG_DIR = os.environ.get("DEBUG_DIR", "")

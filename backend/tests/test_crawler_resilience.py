@@ -14,6 +14,9 @@ class _Stream:
     def read(self) -> str:
         return self._text
 
+    def __iter__(self):
+        return iter(self._text.splitlines(keepends=True))
+
     def close(self) -> None:
         pass
 

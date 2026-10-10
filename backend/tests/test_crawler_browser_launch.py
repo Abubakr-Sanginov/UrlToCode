@@ -74,7 +74,7 @@ class TestNoDisplayToShowABrowserOn:
 
         asyncio.run(worker._launch_chromium(p, headless=False))
 
-        assert "headless" in capsys.readouterr().out.lower()
+        assert "headless" in capsys.readouterr().err.lower()
 
 
 class TestFailuresThatAreNotADisplay:
@@ -160,7 +160,7 @@ class TestNoticingThereIsNoDisplayBeforeLaunching:
 
         assert browser == "browser(headless=True)"
         assert chromium.launches == [True], "it tried headed anyway"
-        assert "DISPLAY" in capsys.readouterr().out
+        assert "DISPLAY" in capsys.readouterr().err
 
     def test_a_machine_with_a_display_still_gets_a_window(
         self, monkeypatch: pytest.MonkeyPatch

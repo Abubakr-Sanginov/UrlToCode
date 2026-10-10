@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 # package root is not on the path by default.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import CRAWLER_HEADLESS  # noqa: E402  (path set up above)
+from config import CRAWLER_HEADLESS, CRAWLER_LOW_MEMORY  # noqa: E402  (path set up above)
 from llm_http import read_worker_params  # noqa: E402  (path set up above)
 from crawler.media_store import (  # noqa: E402  (path set up above)
     MAX_CRAWL_MEDIA_BYTES,
@@ -201,6 +201,9 @@ class MediaCapture:
             if url in self.saved or not url.startswith("http"):
                 return
             if response.request.resource_type not in ("image", "media"):
+                return
+            # Video bodies are held in memory while they are saved.
+            if CRAWLER_LOW_MEMORY and response.request.resource_type == "media":
                 return
             # A 206 is one range of a streamed video; it is fetched whole later.
             if response.status != 200:
@@ -457,7 +460,7 @@ async def collect_media(
     if fetch_missing:
         for url in images[:MAX_FETCHED_IMAGES_PER_PAGE]:
             await media.fetch(context, url, page.url, "image")
-        for video in videos[:MAX_FETCHED_VIDEOS_PER_PAGE]:
+        for video in videos[: 0 if CRAWLER_LOW_MEMORY else MAX_FETCHED_VIDEOS_PER_PAGE]:
             if video["src"]:
                 await media.fetch(context, video["src"], page.url, "video")
     # Head images (favicon) are wanted even when the crawl is short on time.
@@ -865,23 +868,131 @@ async def _launch_chromium(p: Any, headless: bool) -> Any:
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
     ]
+    if CRAWLER_LOW_MEMORY:
+        args += [
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--mute-audio",
+            "--renderer-process-limit=1",
+            "--js-flags=--max-old-space-size=192",
+        ]
     if not headless and _no_display_here():
+        # stderr, not stdout: stdout carries the JSON result, and a stray line
+        # there makes the parent unable to parse it.
         print(
             "[Worker] No DISPLAY on this machine, so there is nowhere to open "
             "a window. Crawling headless. Sites behind a bot check may serve "
-            "their check page instead of the site."
+            "their check page instead of the site.",
+            file=sys.stderr, flush=True,
         )
         headless = True
+    print(
+        f"[Worker] Launching Chromium (headless={headless}, "
+        f"DISPLAY={os.environ.get('DISPLAY', '')!r})",
+        file=sys.stderr, flush=True,
+    )
     try:
         return await p.chromium.launch(headless=headless, args=args)
     except Exception as error:
+        print(f"[Worker] Chromium launch failed: {error}", file=sys.stderr, flush=True)
         if headless or not _looks_like_no_display(error):
             raise
         print(
             "[Worker] No display for a headed browser; crawling headless "
-            "instead. Sites behind a bot check may refuse this one."
+            "instead. Sites behind a bot check may refuse this one.",
+            file=sys.stderr, flush=True,
         )
         return await p.chromium.launch(headless=True, args=args)
+
+
+# Live-view throttle: a frame every SCREENCAST_INTERVAL seconds, at
+# most SCREENCAST_MAX_FRAMES per crawl. Enough to follow the crawl
+# without turning it into a video stream.
+SCREENCAST_INTERVAL = 0.75
+SCREENCAST_MAX_FRAMES = 1200
+
+
+class Screencast:
+    """Live JPEG frames from the browser, written as JSON lines.
+
+    The crawl runs in a container with no display, so nobody can
+    watch the browser work. A CDP screencast gives the person the
+    view the crawler is working from, throttled to a frame every
+    SCREENCAST_INTERVAL seconds so a long crawl does not turn into
+    a video stream.
+    """
+
+    def __init__(self, path: Optional[str]) -> None:
+        self._path = path
+        self._cdp: Any = None
+        self._page: Any = None
+        self._last = 0.0
+        self._count = 0
+
+    async def start(self, context: Any, page: Any) -> None:
+        if not self._path or CRAWLER_LOW_MEMORY:
+            return
+        self._page = page
+        try:
+            self._cdp = await context.new_cdp_session(page)
+            await self._cdp.send(
+                "Page.startScreencast",
+                {"format": "jpeg", "quality": 50, "maxWidth": 640},
+            )
+            self._cdp.on("Page.screencastFrame", self._on_frame)
+        except Exception:
+            # A live view is a convenience, never a reason to fail
+            # a crawl that would otherwise succeed.
+            self._cdp = None
+
+    def _on_frame(self, event: Dict[str, Any]) -> None:
+        session_id = event.get("sessionId")
+        if self._cdp is not None and session_id is not None:
+            # Ack straight away so the browser keeps sending frames
+            # even when this one is throttled away.
+            try:
+                asyncio.ensure_future(
+                    self._cdp.send(
+                        "Page.screencastFrameAck", {"sessionId": session_id}
+                    )
+                )
+            except Exception:
+                pass
+        now = time.monotonic()
+        if now - self._last < SCREENCAST_INTERVAL:
+            return
+        if self._count >= SCREENCAST_MAX_FRAMES:
+            return
+        data = event.get("data")
+        if not data:
+            return
+        self._last = now
+        self._count += 1
+        url = ""
+        if self._page is not None:
+            try:
+                url = self._page.url
+            except Exception:
+                url = ""
+        if not self._path:
+            return
+        try:
+            with open(self._path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"url": url, "image": data}) + "\n")
+        except OSError:
+            pass
+
+    async def stop(self) -> None:
+        if self._cdp is None:
+            return
+        try:
+            await self._cdp.send("Page.stopScreencast")
+        except Exception:
+            pass
+        self._cdp = None
 
 
 async def crawl(
@@ -937,6 +1048,16 @@ async def crawl(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
+        if CRAWLER_LOW_MEMORY:
+            # Streaming video is the biggest thing a page can make the browser
+            # hold; a clone needs the poster, not the footage.
+            async def skip_media(route: Any) -> None:
+                if route.request.resource_type == "media":
+                    await route.abort()
+                else:
+                    await route.continue_()
+
+            await context.route("**/*", skip_media)
         page = await context.new_page()
         # Synchronous in this version of Playwright, and awaited in newer
         # ones. Awaiting it here raised before the crawl started.
@@ -944,6 +1065,10 @@ async def crawl(
         # Installed before the first navigation, so it sees the router's very
         # first push and every request the app makes while it renders.
         await page.add_init_script(route_recorder.ROUTE_RECORDER_JS)
+        # Live view: the person watching the crawl sees what
+        # the browser sees, a frame at a time.
+        screencast = Screencast(os.environ.get("CRAWLER_SCREENCAST_FILE"))
+        await screencast.start(context, page)
         # Resolved once for the whole crawl: the page is re-laid out at each
         # width in turn for every capture.
         viewports = responsive.responsive(bool(responsive_flag))
@@ -1107,6 +1232,7 @@ async def crawl(
                 ):
                     queue.append((absolute, depth + 1))
 
+        await screencast.stop()
         await browser.close()
         # The bodies being read when the crawl ended still have answers in
         # them; waiting for them is the difference between a mock layer with

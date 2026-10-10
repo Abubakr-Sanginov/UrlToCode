@@ -70,6 +70,9 @@ class CrawlResult:
 
 
 ProgressCallback = Callable[[str, int, int], Coroutine[Any, Any, None]]
+# A live frame from the crawl's browser: the page URL and a PNG as a
+# data URL, so a caller can show what the crawl is looking at right now.
+ScreencastFrameCallback = Callable[[str, str], Coroutine[Any, Any, None]]
 
 WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "playwright_worker.py")
 
@@ -93,6 +96,7 @@ def _run_playwright_subprocess(
     responsive: bool = False,
     capture_states: bool = False,
     report_progress: Optional[Callable[[int, int], None]] = None,
+    report_frame: Optional[Callable[[str, str], None]] = None,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
     """Run Playwright in a separate process.
 
@@ -120,6 +124,12 @@ def _run_playwright_subprocess(
     partial_fd, partial_path = tempfile.mkstemp(prefix="crawl_partial_", suffix=".json")
     os.close(partial_fd)
 
+    # The worker streams what its browser is looking at here, one JSON
+    # line per frame, so a caller can show the crawl moving instead of
+    # a frozen progress bar.
+    frames_fd, frames_path = tempfile.mkstemp(prefix="crawl_frames_", suffix=".jsonl")
+    os.close(frames_fd)
+
     params = json.dumps({
         "url": start_url,
         "max_pages": max_pages,
@@ -131,6 +141,7 @@ def _run_playwright_subprocess(
         "output_file": partial_path,
         "responsive": responsive,
         "capture_states": capture_states,
+        "screencast_file": frames_path,
     })
 
     def read_partial() -> List[Dict[str, Any]]:
@@ -184,15 +195,48 @@ def _run_playwright_subprocess(
             last_reported = found
             report_progress(found, max_pages)
 
+    # Frames are appended as the crawl runs, so the file is read from
+    # the byte offset it was last read at; a frame is one JSON line.
+    frames_offset = 0
+
+    def publish_frames() -> None:
+        nonlocal frames_offset
+        if report_frame is None:
+            return
+        try:
+            with open(frames_path, "r", encoding="utf-8") as fh:
+                fh.seek(frames_offset)
+                chunk = fh.read()
+                frames_offset += len(chunk)
+        except OSError:
+            return
+        for line in chunk.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                continue
+            url = frame.get("url")
+            image = frame.get("image")
+            if isinstance(url, str) and isinstance(image, str) and image:
+                report_frame(url, image)
+
     try:
         # Parameters go in over stdin: they carry the API key, and a command
         # line is readable by every process on the machine.
+        # The frames file goes over the environment rather than
+        # the command line, which every process can read.
+        worker_env = os.environ.copy()
+        worker_env["CRAWLER_SCREENCAST_FILE"] = frames_path
         process = subprocess.Popen(
             [sys.executable, WORKER_SCRIPT, "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=worker_env,
         )
         # Declared as Optional because Popen allows a process with no stdin;
         # this one was asked for a pipe, so it has one.
@@ -212,6 +256,15 @@ def _run_playwright_subprocess(
 
         def drain(stream: Any, key: str) -> None:
             try:
+                if key == "err":
+                    # Logged as it arrives: the worker's account of a launch
+                    # that never finishes is otherwise invisible until the
+                    # subprocess timeout, and the log shows a crawl that
+                    # started and said nothing.
+                    for line in stream:
+                        collected[key].append(line)
+                        print(f"[Crawler] {line.rstrip()}", flush=True)
+                    return
                 text = stream.read()
             except Exception:
                 text = ""
@@ -232,6 +285,7 @@ def _run_playwright_subprocess(
                 break
             except subprocess.TimeoutExpired:
                 publish_if_moved()
+                publish_frames()
                 if time.monotonic() >= deadline:
                     expired = True
                     process.kill()
@@ -240,12 +294,9 @@ def _run_playwright_subprocess(
         for reader in readers:
             reader.join(timeout=5)
         publish_if_moved()
+        publish_frames()
         stdout = "".join(collected["out"])
         stderr = "".join(collected["err"])
-
-        if stderr:
-            for line in stderr.strip().splitlines():
-                print(f"[Crawler] {line}")
 
         if expired:
             # Same as the timeout this replaces: the browser is wedged, and
@@ -292,6 +343,10 @@ def _run_playwright_subprocess(
             os.remove(partial_path)
         except OSError:
             pass
+        try:
+            os.remove(frames_path)
+        except OSError:
+            pass
 
 
 class SiteCrawler:
@@ -324,13 +379,21 @@ class SiteCrawler:
         # submits anything, so no model is consulted during exploration.
         self.llm_config = llm_config
         self._progress_callback: Optional[ProgressCallback] = None
+        self._frame_callback: Optional[ScreencastFrameCallback] = None
 
     def set_progress_callback(self, callback: ProgressCallback) -> None:
         self._progress_callback = callback
 
+    def set_frame_callback(self, callback: ScreencastFrameCallback) -> None:
+        self._frame_callback = callback
+
     async def _report_progress(self, status: str, current: int, total: int) -> None:
         if self._progress_callback:
             await self._progress_callback(status, current, total)
+
+    async def _report_frame(self, url: str, image: str) -> None:
+        if self._frame_callback:
+            await self._frame_callback(url, image)
 
     def _normalize_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -371,6 +434,9 @@ class SiteCrawler:
                 loop,
             )
 
+        def report_frame_from_thread(url: str, image: str) -> None:
+            asyncio.run_coroutine_threadsafe(self._report_frame(url, image), loop)
+
         try:
             page_dicts, api, worker_error = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -384,6 +450,7 @@ class SiteCrawler:
                 self.responsive,
                 self.capture_states,
                 report_from_thread,
+                report_frame_from_thread,
             )
         except Exception as e:
             return CrawlResult(base_url=base_url, error=f"Crawl failed: {e}")
