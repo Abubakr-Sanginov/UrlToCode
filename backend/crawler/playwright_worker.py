@@ -11,7 +11,11 @@ from urllib.parse import urljoin, urlparse, urlunparse
 # package root is not on the path by default.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import CRAWLER_HEADLESS, CRAWLER_LOW_MEMORY  # noqa: E402  (path set up above)
+from config import (  # noqa: E402  (path set up above)
+    CRAWLER_BROWSER_WS,
+    CRAWLER_HEADLESS,
+    CRAWLER_LOW_MEMORY,
+)
 from llm_http import read_worker_params  # noqa: E402  (path set up above)
 from crawler.media_store import (  # noqa: E402  (path set up above)
     MAX_CRAWL_MEDIA_BYTES,
@@ -863,6 +867,10 @@ async def _launch_chromium(p: Any, headless: bool) -> Any:
     is a real fault and is left to surface rather than being papered over
     with a different mode that would fail the same way.
     """
+    if CRAWLER_BROWSER_WS:
+        # The address carries the service's token, so it is never printed.
+        print("[Worker] Connecting to the remote browser", file=sys.stderr, flush=True)
+        return await p.chromium.connect_over_cdp(CRAWLER_BROWSER_WS)
     args = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -995,6 +1003,94 @@ class Screencast:
         self._cdp = None
 
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# A remote session is renewed once it is this old, so a page starts with time
+# to finish inside Browserless's two-minute free-plan cap.
+REMOTE_SESSION_SECONDS = 90
+
+
+async def _skip_media(route: Any) -> None:
+    # Streaming video is the biggest thing a page can make the browser hold;
+    # a clone needs the poster, not the footage.
+    if route.request.resource_type == "media":
+        await route.abort()
+    else:
+        await route.continue_()
+
+
+class BrowserSession:
+    """The browser, context and page the crawl works in, and their renewal.
+
+    A local browser lasts the whole crawl. A remote one is reopened between
+    pages before its session cap ends it, and either is reopened if it was
+    disconnected. Everything the crawl collects (media, API answers, queued
+    routes) lives outside the session, so a renewal loses nothing but cookies.
+    """
+
+    def __init__(self, playwright: Any, headless: bool, on_response: Any) -> None:
+        self._playwright = playwright
+        self._headless = headless
+        self._on_response = on_response
+        self.browser: Any = None
+        self.context: Any = None
+        self.page: Any = None
+        self._screencast: Optional[Screencast] = None
+        self._opened_at = 0.0
+
+    async def open(self) -> None:
+        self.browser = await _launch_chromium(self._playwright, self._headless)
+        self.context = await self.browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            user_agent=USER_AGENT,
+        )
+        # Remote time is metered, so video is not streamed there either.
+        if CRAWLER_LOW_MEMORY or CRAWLER_BROWSER_WS:
+            await self.context.route("**/*", _skip_media)
+        page = await self.context.new_page()
+        # Synchronous in this version of Playwright, and awaited in newer
+        # ones. Awaiting it here raised before the crawl started.
+        page.set_default_timeout(8000)
+        # Installed before the first navigation, so it sees the router's very
+        # first push and every request the app makes while it renders.
+        await page.add_init_script(route_recorder.ROUTE_RECORDER_JS)
+        # Live view: the person watching the crawl sees what
+        # the browser sees, a frame at a time.
+        self._screencast = Screencast(os.environ.get("CRAWLER_SCREENCAST_FILE"))
+        await self._screencast.start(self.context, page)
+        page.on("response", self._on_response)
+        self.page = page
+        self._opened_at = time.monotonic()
+
+    def needs_renewal(self) -> bool:
+        try:
+            if not self.browser.is_connected():
+                return True
+        except Exception:
+            return True
+        return bool(CRAWLER_BROWSER_WS) and (
+            time.monotonic() - self._opened_at > REMOTE_SESSION_SECONDS
+        )
+
+    async def renew(self) -> None:
+        print("[Worker] Reopening the browser session", file=sys.stderr, flush=True)
+        await self.close()
+        await self.open()
+
+    async def close(self) -> None:
+        if self._screencast is not None:
+            await self._screencast.stop()
+            self._screencast = None
+        try:
+            await self.browser.close()
+        except Exception:
+            # A session the remote side already ended has nothing to close.
+            pass
+
+
 async def crawl(
     start_url: str,
     max_pages: int,
@@ -1043,32 +1139,6 @@ async def crawl(
         # Headed by default: Cloudflare-style bot checks flag headless Chromium
         # and serve "Just a moment..." instead of the site. Headless is opt-in
         # (CRAWLER_HEADLESS=1) for machines with no display.
-        browser = await _launch_chromium(p, headless)
-        context = await browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
-        if CRAWLER_LOW_MEMORY:
-            # Streaming video is the biggest thing a page can make the browser
-            # hold; a clone needs the poster, not the footage.
-            async def skip_media(route: Any) -> None:
-                if route.request.resource_type == "media":
-                    await route.abort()
-                else:
-                    await route.continue_()
-
-            await context.route("**/*", skip_media)
-        page = await context.new_page()
-        # Synchronous in this version of Playwright, and awaited in newer
-        # ones. Awaiting it here raised before the crawl started.
-        page.set_default_timeout(8000)
-        # Installed before the first navigation, so it sees the router's very
-        # first push and every request the app makes while it renders.
-        await page.add_init_script(route_recorder.ROUTE_RECORDER_JS)
-        # Live view: the person watching the crawl sees what
-        # the browser sees, a frame at a time.
-        screencast = Screencast(os.environ.get("CRAWLER_SCREENCAST_FILE"))
-        await screencast.start(context, page)
         # Resolved once for the whole crawl: the page is re-laid out at each
         # width in turn for every capture.
         viewports = responsive.responsive(bool(responsive_flag))
@@ -1106,7 +1176,10 @@ async def crawl(
                 # A response from a page that navigated away is unreadable.
                 pass
 
-        page.on("response", on_response)
+        session = BrowserSession(p, headless, on_response)
+        await session.open()
+        page: Any = session.page
+        context: Any = session.context
 
         queue = [(start_url, 0)]
 
@@ -1123,6 +1196,18 @@ async def crawl(
             if norm in visited or depth > max_depth:
                 continue
             visited.add(norm)
+
+            # A remote browser's session is capped (two minutes on Browserless's
+            # free plan), so a fresh one is opened before each page that
+            # could otherwise be cut off half way through.
+            if session.needs_renewal():
+                try:
+                    await session.renew()
+                except Exception as e:
+                    print(f"[Worker] Could not reopen the browser: {e}", file=sys.stderr, flush=True)
+                    break
+                page = session.page
+                context = session.context
 
             print(f"[Worker] -> {url} (depth={depth})", file=sys.stderr, flush=True)
 
@@ -1232,8 +1317,7 @@ async def crawl(
                 ):
                     queue.append((absolute, depth + 1))
 
-        await screencast.stop()
-        await browser.close()
+        await session.close()
         # The bodies being read when the crawl ended still have answers in
         # them; waiting for them is the difference between a mock layer with
         # the page's data and one that only caught what came back early.

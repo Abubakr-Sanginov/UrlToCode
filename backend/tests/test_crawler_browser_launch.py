@@ -210,3 +210,78 @@ def test_the_worker_really_does_ask_for_a_display_first():
     every crawl."""
     source: Any = open(worker.__file__, encoding="utf-8").read()
     assert "headless = CRAWLER_HEADLESS" in source
+
+class FakeRemoteChromium:
+    def __init__(self) -> None:
+        self.connected_to: list = []
+        self.launches: list = []
+
+    async def connect_over_cdp(self, url: str):
+        self.connected_to.append(url)
+        return "remote-browser"
+
+    async def launch(self, headless: bool, args=None):
+        self.launches.append(headless)
+        return "local-browser"
+
+
+class TestARemoteBrowser:
+    """With CRAWLER_BROWSER_WS set, the browser runs on a service such as
+    Browserless and this machine starts none, which is what lets a 512 MB
+    host crawl at all."""
+
+    def test_it_connects_instead_of_launching(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "wss://example.test?token=secret")
+        chromium = FakeRemoteChromium()
+
+        browser = asyncio.run(worker._launch_chromium(FakePlaywright(chromium), headless=False))  # type: ignore[arg-type]
+
+        assert browser == "remote-browser"
+        assert chromium.connected_to == ["wss://example.test?token=secret"]
+        assert chromium.launches == []
+
+    def test_the_token_is_never_logged(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "wss://example.test?token=secret")
+
+        asyncio.run(worker._launch_chromium(FakePlaywright(FakeRemoteChromium()), headless=False))  # type: ignore[arg-type]
+
+        output = capsys.readouterr()
+        assert "secret" not in output.out + output.err
+
+
+class FakeBrowser:
+    def __init__(self, connected: bool = True) -> None:
+        self.connected = connected
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+
+class TestRenewingTheSession:
+    """Browserless's free plan ends a session after a minute, so a remote
+    session is reopened between pages before that can cut one off."""
+
+    def _session(self, browser: FakeBrowser, age: float) -> Any:
+        session = worker.BrowserSession(None, headless=True, on_response=None)
+        session.browser = browser
+        session._opened_at = worker.time.monotonic() - age
+        return session
+
+    def test_a_young_remote_session_is_kept(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "wss://example.test")
+        assert self._session(FakeBrowser(), age=5).needs_renewal() is False
+
+    def test_an_old_remote_session_is_renewed(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "wss://example.test")
+        session = self._session(FakeBrowser(), age=worker.REMOTE_SESSION_SECONDS + 1)
+        assert session.needs_renewal() is True
+
+    def test_a_local_browser_lasts_the_whole_crawl(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "")
+        assert self._session(FakeBrowser(), age=3600).needs_renewal() is False
+
+    def test_a_disconnected_browser_is_reopened(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "")
+        assert self._session(FakeBrowser(connected=False), age=1).needs_renewal() is True

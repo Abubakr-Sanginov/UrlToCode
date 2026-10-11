@@ -61,6 +61,11 @@ CRAWLER_HEADLESS = _env_flag("CRAWLER_HEADLESS")
 # live view, a leaner browser.
 CRAWLER_LOW_MEMORY = _env_flag("CRAWLER_LOW_MEMORY")
 
+# A remote Chromium to crawl with instead of starting one here, as a CDP
+# websocket address such as wss://production-sfo.browserless.io?token=...
+# The backend then needs little memory: the browser runs on the service.
+CRAWLER_BROWSER_WS = os.environ.get("CRAWLER_BROWSER_WS", "").strip()
+
 # Debugging-related
 IS_DEBUG_ENABLED = _env_flag("IS_DEBUG_ENABLED")
 DEBUG_DIR = os.environ.get("DEBUG_DIR", "")
