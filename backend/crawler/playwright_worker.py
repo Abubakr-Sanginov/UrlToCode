@@ -1045,14 +1045,23 @@ class BrowserSession:
 
     async def open(self) -> None:
         self.browser = await _launch_chromium(self._playwright, self._headless)
-        self.context = await self.browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent=USER_AGENT,
-        )
+        if CRAWLER_BROWSER_WS and self.browser.contexts:
+            # A remote browser already has its context, and the service's
+            # documentation says to use it: one made with new_context() does
+            # not inherit the session's settings and was closed under the
+            # crawl, taking the page with it.
+            self.context = self.browser.contexts[0]
+        else:
+            self.context = await self.browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                user_agent=USER_AGENT,
+            )
         # Remote time is metered, so video is not streamed there either.
         if CRAWLER_LOW_MEMORY or CRAWLER_BROWSER_WS:
             await self.context.route("**/*", _skip_media)
         page = await self.context.new_page()
+        if CRAWLER_BROWSER_WS:
+            await page.set_viewport_size({"width": 1366, "height": 768})
         # Synchronous in this version of Playwright, and awaited in newer
         # ones. Awaiting it here raised before the crawl started.
         page.set_default_timeout(8000)
@@ -1066,6 +1075,12 @@ class BrowserSession:
         page.on("response", self._on_response)
         self.page = page
         self._opened_at = time.monotonic()
+
+    def page_is_gone(self) -> bool:
+        try:
+            return bool(self.page.is_closed()) or not self.browser.is_connected()
+        except Exception:
+            return True
 
     def needs_renewal(self) -> bool:
         try:
@@ -1184,6 +1199,8 @@ async def crawl(
         context: Any = session.context
 
         queue = [(start_url, 0)]
+        # Pages already retried once after the browser closed under them.
+        retried: set[str] = set()
 
         while queue and len(pages) < max_pages:
             if time_left() < 20:
@@ -1232,7 +1249,27 @@ async def crawl(
             except Exception:
                 pass
 
-            await page.wait_for_timeout(1500)
+            try:
+                await page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+            # A remote browser can drop the page after it loads. Capturing a
+            # closed page produced one empty page and a blank clone, so the
+            # session is reopened and the page tried once more.
+            if session.page_is_gone() and url not in retried:
+                retried.add(url)
+                print("[Worker] The page was closed under the crawl, retrying it", file=sys.stderr, flush=True)
+                visited.discard(norm)
+                queue.insert(0, (url, depth))
+                try:
+                    await session.renew()
+                except Exception as e:
+                    print(f"[Worker] Could not reopen the browser: {e}", file=sys.stderr, flush=True)
+                    break
+                page = session.page
+                context = session.context
+                continue
 
             blocked = await wait_out_bot_check(page)
 

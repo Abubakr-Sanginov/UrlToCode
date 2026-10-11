@@ -285,3 +285,75 @@ class TestRenewingTheSession:
     def test_a_disconnected_browser_is_reopened(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "")
         assert self._session(FakeBrowser(connected=False), age=1).needs_renewal() is True
+
+
+class FakePage:
+    def __init__(self) -> None:
+        self.viewport: Any = None
+
+    async def add_init_script(self, script: str) -> None:
+        pass
+
+    def set_default_timeout(self, ms: int) -> None:
+        pass
+
+    async def set_viewport_size(self, size: Any) -> None:
+        self.viewport = size
+
+    def on(self, event: str, handler: Any) -> None:
+        pass
+
+    def is_closed(self) -> bool:
+        return False
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.page = FakePage()
+
+    async def route(self, pattern: str, handler: Any) -> None:
+        pass
+
+    async def new_page(self) -> FakePage:
+        return self.page
+
+
+class FakeRemoteBrowser:
+    def __init__(self) -> None:
+        self.contexts = [FakeContext()]
+        self.new_contexts = 0
+
+    async def new_context(self, **kwargs: Any) -> FakeContext:
+        self.new_contexts += 1
+        return FakeContext()
+
+    def is_connected(self) -> bool:
+        return True
+
+
+class TestTheRemoteBrowsersOwnContext:
+    """The service's documentation says to use the context it already has. A
+    context made with new_context() was closed under the crawl, which left one
+    empty page and a blank clone."""
+
+    def test_it_uses_the_existing_context(self, monkeypatch: pytest.MonkeyPatch):
+        remote = FakeRemoteBrowser()
+
+        async def connect(p: Any, headless: bool) -> Any:
+            return remote
+
+        monkeypatch.setattr(worker, "CRAWLER_BROWSER_WS", "wss://example.test")
+        monkeypatch.setattr(worker, "_launch_chromium", connect)
+        session = worker.BrowserSession(None, headless=True, on_response=lambda r: None)
+
+        asyncio.run(session.open())
+
+        assert remote.new_contexts == 0
+        assert session.context is remote.contexts[0]
+        assert session.page.viewport == {"width": 1366, "height": 768}
+
+    def test_a_closed_page_is_noticed(self):
+        session = worker.BrowserSession(None, headless=True, on_response=None)
+        session.browser = FakeBrowser(connected=False)
+        session.page = FakePage()
+        assert session.page_is_gone() is True
