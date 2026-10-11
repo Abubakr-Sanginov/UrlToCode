@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 from urllib.parse import urljoin, urlparse, urlunparse
 
 # Run as a script (`python crawler/playwright_worker.py`), so the backend
@@ -1056,12 +1056,16 @@ class BrowserSession:
                 viewport={"width": 1366, "height": 768},
                 user_agent=USER_AGENT,
             )
-        # Remote time is metered, so video is not streamed there either.
-        if CRAWLER_LOW_MEMORY or CRAWLER_BROWSER_WS:
+        # Request interception and a screencast are extra protocol traffic
+        # that a remote browser has to carry; they are left out there until a
+        # plain crawl is known to hold, since the page was being closed under
+        # it. Video is still not saved: the response handler skips it.
+        if CRAWLER_LOW_MEMORY and not CRAWLER_BROWSER_WS:
             await self.context.route("**/*", _skip_media)
         page = await self.context.new_page()
         if CRAWLER_BROWSER_WS:
             await page.set_viewport_size({"width": 1366, "height": 768})
+        self._watch_for_closing(page)
         # Synchronous in this version of Playwright, and awaited in newer
         # ones. Awaiting it here raised before the crawl started.
         page.set_default_timeout(8000)
@@ -1070,11 +1074,37 @@ class BrowserSession:
         await page.add_init_script(route_recorder.ROUTE_RECORDER_JS)
         # Live view: the person watching the crawl sees what
         # the browser sees, a frame at a time.
-        self._screencast = Screencast(os.environ.get("CRAWLER_SCREENCAST_FILE"))
+        self._screencast = Screencast(
+            None if CRAWLER_BROWSER_WS else os.environ.get("CRAWLER_SCREENCAST_FILE")
+        )
         await self._screencast.start(self.context, page)
         page.on("response", self._on_response)
         self.page = page
         self._opened_at = time.monotonic()
+
+    def _watch_for_closing(self, page: Any) -> None:
+        """Say when and how the page or browser went away.
+
+        A remote browser that closes under the crawl leaves only "Target page,
+        context or browser has been closed" in the log, which says nothing of
+        who closed it or how long into the page it happened.
+        """
+        started = time.monotonic()
+
+        def say(what: str) -> Callable[..., None]:
+            def handler(*_args: Any) -> None:
+                print(
+                    f"[Worker] {what} after {time.monotonic() - started:.1f}s",
+                    file=sys.stderr, flush=True,
+                )
+            return handler
+
+        try:
+            page.on("close", say("Page closed"))
+            page.on("crash", say("Page crashed"))
+            self.browser.on("disconnected", say("Browser disconnected"))
+        except Exception:
+            pass
 
     def page_is_gone(self) -> bool:
         try:
