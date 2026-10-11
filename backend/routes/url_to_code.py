@@ -242,6 +242,7 @@ class RetryBudget:
 UrlMessageType = Literal[
     "status",
     "progress",
+    "screencast",
     "crawlComplete",
     "pageStart",
     "pageComplete",
@@ -1399,6 +1400,17 @@ async def url_to_code_ws(websocket: WebSocket):
             is_closed=is_closed,
         )
 
+    # Live frames from the crawl's browser, so the person who
+    # asked for the clone can watch what it is being built from.
+    async def crawl_frame(url: str, image: str) -> None:
+        nonlocal is_closed
+        is_closed = await send_ws_message(
+            websocket,
+            "screencast",
+            data={"url": url, "image": image},
+            is_closed=is_closed,
+        )
+
     crawler = SiteCrawler(
         max_pages=params.max_pages,
         max_depth=params.max_depth,
@@ -1408,6 +1420,7 @@ async def url_to_code_ws(websocket: WebSocket):
         capture_states=params.capture_interactions,
     )
     crawler.set_progress_callback(crawl_progress)
+    crawler.set_frame_callback(crawl_frame)
 
     is_closed = await send_ws_message(websocket, "status", "Starting website crawl...", is_closed=is_closed)
 

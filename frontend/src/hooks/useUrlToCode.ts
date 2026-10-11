@@ -72,6 +72,8 @@ export interface CrawlRunState {
   error: string | null;
   /** `Date.now()` when the run started; drives the elapsed timer. */
   startedAt: number | null;
+  /** Latest live frame from the crawl's browser, raw base64 JPEG. */
+  screencast: { url: string; image: string } | null;
   isLoading: boolean;
 }
 
@@ -111,6 +113,7 @@ const IDLE_STATE: CrawlRunState = {
   failedPages: [],
   error: null,
   startedAt: null,
+  screencast: null,
   isLoading: false,
 };
 
@@ -298,6 +301,18 @@ export function useUrlToCode(
             status: response.value ?? "Choose which pages to build",
             pageSelection: { pages, timeoutSeconds },
           }));
+          break;
+        }
+
+        case "screencast": {
+          // Live view from the crawl's browser. The worker writes raw
+          // base64 JPEG frames; the <img> in the pane wraps them in a
+          // data URL.
+          const url = response.data?.url;
+          const image = response.data?.image;
+          if (typeof url === "string" && typeof image === "string" && image) {
+            setState((s) => ({ ...s, screencast: { url, image } }));
+          }
           break;
         }
 

@@ -941,7 +941,9 @@ class Screencast:
         self._count = 0
 
     async def start(self, context: Any, page: Any) -> None:
-        if not self._path or CRAWLER_LOW_MEMORY:
+        # Frames cost this machine memory only when the browser runs on it; a
+        # remote browser sends them over the network and holds nothing here.
+        if not self._path or (CRAWLER_LOW_MEMORY and not CRAWLER_BROWSER_WS):
             return
         self._page = page
         try:

@@ -782,6 +782,25 @@ function UrlToCodePane({
             </div>
           )}
 
+          {state.screencast && (
+            <figure className="px-4 pt-3" data-testid="clone-screencast">
+              <img
+                src={`data:image/jpeg;base64,${state.screencast.image}`}
+                alt={state.screencast.url || "Live view of the crawl"}
+                className="w-full rounded-lg border border-border"
+              />
+              <figcaption className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <LuEye
+                  className="h-3.5 w-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="truncate">
+                  {state.screencast.url || "Live view"}
+                </span>
+              </figcaption>
+            </figure>
+          )}
+
           <div
             className="max-h-56 space-y-2 overflow-y-auto px-4 py-3"
             role="status"

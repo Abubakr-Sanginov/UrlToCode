@@ -1,5 +1,5 @@
 {
-  "exclude": ["image_generation.py"],
+  "exclude": ["image_generation.py", "hf_space"],
   "typeCheckingMode": "basic",
   "reportMissingTypeStubs": "none",
   "reportUnknownVariableType": "warning"
